@@ -19,7 +19,8 @@ type sourceFile struct {
 }
 
 type declaration struct {
-	body *ast.BlockStmt
+	body     *ast.BlockStmt
+	typeInfo *ast.FuncType
 }
 
 // ValidateStepSources examines every Go source file, including _test.go. Files
@@ -94,7 +95,7 @@ func validatePackage(set *token.FileSet, files []sourceFile) error {
 			if !ok || function.Body == nil {
 				continue
 			}
-			item := declaration{body: function.Body}
+			item := declaration{body: function.Body, typeInfo: function.Type}
 			if function.Recv == nil {
 				functions[function.Name.Name] = append(functions[function.Name.Name], item)
 			} else {
@@ -138,13 +139,13 @@ func inspectFile(set *token.FileSet, file sourceFile, functions, methods map[str
 			}
 
 			handler := value.Args[1]
-			body, resolved := resolveHandler(handler, functions, methods, imports)
+			definition, resolved := resolveHandler(handler, functions, methods, imports)
 			if !resolved {
 				validationErr = positionError(set, file.path, handler.Pos(), "registered step handler cannot be resolved within its package")
 				return false
 			}
-			if isTrivialNilHandler(body) {
-				validationErr = positionError(set, file.path, handler.Pos(), "registered step handler is empty or only returns nil")
+			if isTrivialHandler(definition) {
+				validationErr = positionError(set, file.path, handler.Pos(), "registered step handler is empty, only returns nil, or has no observable effect")
 				return false
 			}
 		}
@@ -153,27 +154,27 @@ func inspectFile(set *token.FileSet, file sourceFile, functions, methods map[str
 	return validationErr
 }
 
-func resolveHandler(expression ast.Expr, functions, methods map[string][]declaration, imports map[string]struct{}) (*ast.BlockStmt, bool) {
+func resolveHandler(expression ast.Expr, functions, methods map[string][]declaration, imports map[string]struct{}) (declaration, bool) {
 	switch handler := expression.(type) {
 	case *ast.FuncLit:
-		return handler.Body, true
+		return declaration{body: handler.Body, typeInfo: handler.Type}, true
 	case *ast.Ident:
 		items := functions[handler.Name]
 		if len(items) == 1 {
-			return items[0].body, true
+			return items[0], true
 		}
 	case *ast.SelectorExpr:
 		if receiver, ok := handler.X.(*ast.Ident); ok {
 			if _, imported := imports[receiver.Name]; imported {
-				return nil, false
+				return declaration{}, false
 			}
 		}
 		items := methods[handler.Sel.Name]
 		if len(items) == 1 {
-			return items[0].body, true
+			return items[0], true
 		}
 	}
-	return nil, false
+	return declaration{}, false
 }
 
 func importNames(file *ast.File) map[string]struct{} {
@@ -202,19 +203,84 @@ func isStepRegistration(name string) bool {
 	}
 }
 
-func isTrivialNilHandler(body *ast.BlockStmt) bool {
-	if len(body.List) == 0 {
+func isTrivialHandler(definition declaration) bool {
+	statements := definition.body.List
+	for len(statements) > 0 && isIgnorableNoOp(statements[0]) {
+		statements = statements[1:]
+	}
+	if len(statements) == 0 {
 		return true
 	}
-	if len(body.List) != 1 {
+	if len(statements) != 1 {
 		return false
 	}
-	statement, ok := body.List[0].(*ast.ReturnStmt)
-	if !ok || len(statement.Results) != 1 {
+	statement, ok := statements[0].(*ast.ReturnStmt)
+	if !ok {
 		return false
 	}
-	identifier, ok := statement.Results[0].(*ast.Ident)
-	return ok && identifier.Name == "nil"
+	parameters := parameterNames(definition.typeInfo)
+	for _, result := range statement.Results {
+		if !isTrivialResult(result, parameters) {
+			return false
+		}
+	}
+	return true
+}
+
+func isIgnorableNoOp(statement ast.Stmt) bool {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.ASSIGN || len(assignment.Lhs) == 0 {
+		return false
+	}
+	for _, target := range assignment.Lhs {
+		identifier, ok := target.(*ast.Ident)
+		if !ok || identifier.Name != "_" {
+			return false
+		}
+	}
+	for _, value := range assignment.Rhs {
+		if _, ok := value.(*ast.BasicLit); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func parameterNames(functionType *ast.FuncType) map[string]struct{} {
+	names := make(map[string]struct{})
+	if functionType == nil || functionType.Params == nil {
+		return names
+	}
+	for _, field := range functionType.Params.List {
+		for _, name := range field.Names {
+			names[name.Name] = struct{}{}
+		}
+	}
+	return names
+}
+
+func isTrivialResult(expression ast.Expr, parameters map[string]struct{}) bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if value.Name == "nil" {
+			return true
+		}
+		_, isInput := parameters[value.Name]
+		return isInput
+	case *ast.CallExpr:
+		if identifier, ok := value.Fun.(*ast.Ident); ok && identifier.Name == "error" && len(value.Args) == 1 {
+			nilValue, ok := value.Args[0].(*ast.Ident)
+			return ok && nilValue.Name == "nil"
+		}
+		selector, ok := value.Fun.(*ast.SelectorExpr)
+		if !ok || len(value.Args) != 0 {
+			return false
+		}
+		packageName, ok := selector.X.(*ast.Ident)
+		return ok && packageName.Name == "context" && (selector.Sel.Name == "Background" || selector.Sel.Name == "TODO")
+	default:
+		return false
+	}
 }
 
 func positionError(set *token.FileSet, path string, position token.Pos, format string, args ...any) error {

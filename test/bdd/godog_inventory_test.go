@@ -21,7 +21,8 @@ var (
 )
 
 type scenarioInventory struct {
-	tags map[string]struct{}
+	tags    map[string]struct{}
+	pickles int
 }
 
 type inventoryFormatter struct {
@@ -31,6 +32,7 @@ type inventoryFormatter struct {
 func (*inventoryFormatter) TestRunStarted()                                   {}
 func (*inventoryFormatter) Feature(*messages.GherkinDocument, string, []byte) {}
 func (formatter *inventoryFormatter) Pickle(pickle *messages.Pickle) {
+	formatter.inventory.pickles++
 	for _, tag := range pickle.Tags {
 		if len(tag.Name) > len("@SCN-") && tag.Name[:len("@SCN-")] == "@SCN-" {
 			formatter.inventory.tags[tag.Name] = struct{}{}
@@ -90,6 +92,9 @@ func TestGodogDiscoveryMatchesCatalog(t *testing.T) {
 	}
 	if len(inventory.tags) != len(catalog.ScenarioTags) {
 		t.Fatalf("Godog discovered %d unique @SCN tags, catalog has %d", len(inventory.tags), len(catalog.ScenarioTags))
+	}
+	if got, want := inventory.pickles, 95; got != want {
+		t.Errorf("Godog discovered %d pickles, want %d expanded executions", got, want)
 	}
 	for _, tag := range catalog.ScenarioTags {
 		if _, exists := inventory.tags[tag]; !exists {

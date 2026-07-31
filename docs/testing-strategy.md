@@ -43,11 +43,13 @@ Unitários não substituem BDDs; BDDs não substituem contratos, falhas reais ou
 
 ### Inventário sempre validado
 
-`internal/bddcatalog` parseia cada `.feature`, exige uma `Funcionalidade`, exatamente uma tag `@SCN-*` por cenário, 81 tags únicas e um manifesto válido. `make bdd-parse` executa essa validação.
+`internal/bddcatalog` parseia cada `.feature`, exige `# language: pt` na primeira linha, uma `Funcionalidade`, exatamente uma tag `@SCN-*` por cenário, 81 tags únicas e um manifesto válido. `make bdd-parse` executa essa validação.
 
 O catálogo é intencionalmente plano nesta versão. Se encontrar `Regra:`, rejeita o arquivo com erro preciso em vez de ignorar silenciosamente cenários aninhados.
 
 `TestAllFeaturesParseWithGodog` também força o Godog a carregar os arquivos. Ele usa uma tag que não seleciona cenários: valida parsing, não steps nem comportamento.
+
+`TestGodogDiscoveryMatchesCatalog` reconcilia as 81 tags nos dois sentidos e exige 95 pickles: 81 cenários declarados menos 6 outlines, mais as 20 linhas de exemplos. “81 cenários” identifica requisitos; “95 execuções” identifica os casos expandidos pelo runner.
 
 ### Seleção de cenários implementados
 
@@ -62,6 +64,8 @@ O catálogo é intencionalmente plano nesta versão. Se encontrar `Regra:`, reje
 Cenários ausentes do manifesto não são chamados de `skip` pelo Godog; simplesmente não são selecionados para execução comportamental. Isso mantém a diferença entre “requisito aprovado” e “comportamento entregue”.
 
 Quando selecionado, um cenário com step `undefined`, `pending`, `ambiguous` ou `skipped` deve reprovar. `godog.ErrPending`, `godog.ErrSkip`, `testing.T.Skip*` e handlers vazios não são uma forma válida de avançar o manifesto.
+
+O Godog v0.15.1 usa filtro Behat legado. Múltiplas tags do manifesto são unidas por vírgula (`@A,@B`) para representar OR; palavras como `or` e parênteses viram parte de uma tag literal. Um teste de política executa duas tags e protege essa compatibilidade.
 
 O `bddguard` analisa todos os arquivos do mesmo package e exige que cada registro aponte diretamente para uma função local, um método local de nome unívoco ou uma função inline não trivial. Se o corpo não puder ser resolvido, falha fechado com `cannot be resolved within its package`. Selector de package importado é reconhecido antes da busca de métodos locais, evitando aprovação por colisão de nome.
 

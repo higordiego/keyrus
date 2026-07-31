@@ -9,13 +9,14 @@ Este diretório concentra o harness executável. A documentação prática está
 ## Estado atual
 
 - 14 arquivos `.feature` e 81 tags únicas `@SCN-*` são parseados e inventariados.
-- O inventário observado pelo Godog é reconciliado com o mesmo conjunto de 81 tags do catálogo.
+- O inventário observado pelo Godog é reconciliado com o mesmo conjunto de 81 tags do catálogo e com 95 execuções/pickles após expandir 6 outlines em 20 linhas de exemplos.
 - `TestImplementedScenarios` conecta `steps.Initialize`, `bddguard.ValidateStepSources` e `bddrunner.Run`.
 - Fixtures de política provam que binding real com efeito observável passa, enquanto tag sem binding, manifesto/tag inválida, `pending`, `skip` e handlers triviais por `Step`/`Given`/`When`/`Then` falham.
 - O catálogo é deliberadamente plano nesta versão: um bloco `Regra:` é rejeitado com erro preciso, nunca descartado silenciosamente.
 - `features/implemented_scenarios.txt` está vazio: **0 cenários de negócio estão implementados**.
 - Cenários fora do manifesto são especificações aprovadas, não testes executados nem evidência de implementação.
 - `undefined`, `pending`, `ambiguous` ou `skipped` não podem contar como sucesso quando um cenário entrar na suíte implementada.
+- Múltiplas tags do manifesto usam a sintaxe OR legada do Godog v0.15.1 (`@A,@B`); um teste executa duas tags e impede seleção vazia por filtro incompatível.
 
 ## Verificação rápida
 

@@ -15,6 +15,17 @@ Funcionalidade: Política do runner
     Dado um efeito observável
 `
 
+const multiTagFixtureFeature = `# language: pt
+Funcionalidade: Política multi-tag do runner
+  @SCN-FIXTURE-001
+  Cenário: Executar primeiro binding selecionado
+    Dado o primeiro efeito observável
+
+  @SCN-FIXTURE-002
+  Cenário: Executar segundo binding selecionado
+    Dado o segundo efeito observável
+`
+
 func fixtureConfig(initialize func(*godog.ScenarioContext)) bddrunner.Config {
 	return bddrunner.Config{
 		Name: "runner-policy-fixture",
@@ -50,6 +61,34 @@ func TestRunnerAcceptsRealBindingWithObservableEffect(t *testing.T) {
 	}
 	if effects != 1 {
 		t.Fatalf("observable effect count: got %d, want 1", effects)
+	}
+}
+
+func TestRunnerUsesGodogLegacyORForMultipleManifestTags(t *testing.T) {
+	effects := 0
+	err := bddrunner.Run(bddrunner.Config{
+		Name: "runner-multi-tag-fixture",
+		FeatureContents: []godog.Feature{{
+			Name:     "runner-multi-tag.feature",
+			Contents: []byte(multiTagFixtureFeature),
+		}},
+		Tags: []string{"@SCN-FIXTURE-001", "@SCN-FIXTURE-002"},
+		Initialize: func(ctx *godog.ScenarioContext) {
+			ctx.Step(`^o primeiro efeito observável$`, func() error {
+				effects++
+				return nil
+			})
+			ctx.Step(`^o segundo efeito observável$`, func() error {
+				effects++
+				return nil
+			})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effects != 2 {
+		t.Fatalf("observable effect count: got %d, want 2", effects)
 	}
 }
 
