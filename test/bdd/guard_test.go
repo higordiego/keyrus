@@ -33,6 +33,11 @@ func TestStepSourceGuardFixtures(t *testing.T) {
 		{name: "trivial method", path: "testdata/guard/method", wantError: "only returns nil"},
 		{name: "real cross-file method", path: "testdata/guard/real-method"},
 		{name: "import selector does not collide with local method", path: "testdata/guard/import-collision", wantError: "cannot be resolved within its package"},
+		{name: "trivial context identity", path: "testdata/guard/trivial-context", wantError: "no observable effect"},
+		{name: "trivial background context", path: "testdata/guard/trivial-background", wantError: "no observable effect"},
+		{name: "trivial blank assignment", path: "testdata/guard/trivial-blank-assignment", wantError: "no observable effect"},
+		{name: "trivial error conversion", path: "testdata/guard/trivial-error-conversion", wantError: "no observable effect"},
+		{name: "real context binding", path: "testdata/guard/real-context"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -89,5 +94,26 @@ Funcionalidade: Fixture com regra
 	_, err := bddcatalog.Load(root, manifestPath)
 	if err == nil || !strings.Contains(err.Error(), "contains Regra:") {
 		t.Fatalf("got %v, want precise Regra: rejection", err)
+	}
+}
+
+func TestCatalogRejectsFeatureWithoutPortugueseLanguageHeader(t *testing.T) {
+	root := t.TempDir()
+	feature := `Funcionalidade: Fixture sem dialeto explícito
+  @SCN-FIXTURE-001
+  Cenário: Cenário inválido para o catálogo
+    Dado algo
+    Então algo acontece
+`
+	if err := os.WriteFile(filepath.Join(root, "missing-language.feature"), []byte(feature), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root, "implemented.txt")
+	if err := os.WriteFile(manifestPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := bddcatalog.Load(root, manifestPath)
+	if err == nil || !strings.Contains(err.Error(), "# language: pt on the first line") {
+		t.Fatalf("got %v, want explicit Portuguese language header error", err)
 	}
 }

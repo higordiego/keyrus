@@ -36,7 +36,10 @@ Funcionalidade: Calcular resultados financeiros exatos
   @SCN-RF04A-003
   Cenário: Recompor saldos exatos após lançamento retroativo
     Dado que o saldo de abertura do comerciante é R$ 0,00
-    E que as posições 1, 2 e 3 já produziram saldo acumulado de R$ 70,00 em "2026-07-30" e R$ 80,00 em "2026-07-31"
+    E que a posição 1 é um crédito de R$ 100,00 em "2026-07-30"
+    E que a posição 2 é um débito de R$ 30,00 em "2026-07-30"
+    E que a posição 3 é um crédito de R$ 10,00 em "2026-07-31"
+    E que as posições 1, 2 e 3 já foram aplicadas
     Quando a posição 4 do comerciante, um débito retroativo de R$ 20,00 em "2026-07-30", for aplicada
     Então o dia "2026-07-30" deve possuir créditos de R$ 100,00
     E débitos de R$ 50,00
@@ -54,6 +57,7 @@ Funcionalidade: Calcular resultados financeiros exatos
     E que as posições 1 a 4 do comerciante já foram aplicadas
     E que a posição 3 é um crédito de R$ 10,00 em "2026-07-31"
     E que o saldo acumulado em "2026-07-31" é R$ 60,00
+    E que não existe outra movimentação em "2026-08-01"
     Quando a posição 5 estornar integralmente o crédito da posição 3
     Então o dia "2026-08-01" deve possuir créditos de R$ 0,00
     E débitos de R$ 10,00
@@ -62,4 +66,3 @@ Funcionalidade: Calcular resultados financeiros exatos
     E saldo acumulado de R$ 50,00
     E os totais históricos de "2026-07-31" devem permanecer inalterados
     E "source_position" e "applied_position" do comerciante devem ser 5
-

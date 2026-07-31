@@ -4,6 +4,7 @@ package bddcatalog
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -81,13 +82,16 @@ func featurePaths(root string) ([]string, error) {
 }
 
 func parseFeature(path string) ([]string, error) {
-	f, err := os.Open(path)
+	contents, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	defer f.Close()
+	firstLine, _, _ := bytes.Cut(contents, []byte("\n"))
+	if !bytes.Equal(firstLine, []byte("# language: pt")) {
+		return nil, fmt.Errorf("%s must declare # language: pt on the first line", path)
+	}
 
-	doc, err := gherkin.ParseGherkinDocumentForLanguage(f, "pt", (&messages.Incrementing{}).NewId)
+	doc, err := gherkin.ParseGherkinDocumentForLanguage(bytes.NewReader(contents), "pt", (&messages.Incrementing{}).NewId)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
