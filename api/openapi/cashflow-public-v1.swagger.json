@@ -1,0 +1,531 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "cashflow/consolidation/public/v1/consolidation.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "ConsolidationService"
+    },
+    {
+      "name": "LedgerService"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/daily-balances": {
+      "get": {
+        "operationId": "ConsolidationService_GetDailyBalances",
+        "responses": {
+          "200": {
+            "description": "Daily result envelopes. A known pending date can have data null while state and positions remain present.",
+            "schema": {
+              "$ref": "#/definitions/v1GetDailyBalancesResponse"
+            }
+          },
+          "400": {
+            "description": "Invalid date or period.",
+            "schema": {}
+          },
+          "401": {
+            "description": "Missing or invalid authentication.",
+            "schema": {}
+          },
+          "403": {
+            "description": "Authenticated identity lacks the required scope.",
+            "schema": {}
+          },
+          "503": {
+            "description": "No snapshot can be accessed or proven valid; no balance is presented.",
+            "schema": {}
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "ConsolidationService"
+        ]
+      }
+    },
+    "/v1/entries": {
+      "get": {
+        "operationId": "LedgerService_ListEntries",
+        "responses": {
+          "200": {
+            "description": "Page of entries owned by the authenticated merchant.",
+            "schema": {
+              "$ref": "#/definitions/v1ListEntriesResponse"
+            }
+          },
+          "400": {
+            "description": "Invalid period, page size, or cursor.",
+            "schema": {}
+          },
+          "401": {
+            "description": "Missing or invalid authentication.",
+            "schema": {}
+          },
+          "403": {
+            "description": "Authenticated identity lacks the required scope.",
+            "schema": {}
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LedgerService"
+        ]
+      },
+      "post": {
+        "summary": "Create a confirmed ledger entry",
+        "description": "Creates a durable credit or debit. The Idempotency-Key is scoped to the authenticated merchant.",
+        "operationId": "LedgerService_CreateEntry",
+        "responses": {
+          "201": {
+            "description": "Entry confirmed durably.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateEntryResponse"
+            }
+          },
+          "400": {
+            "description": "Invalid financial value, type, currency, business date, or request.",
+            "schema": {}
+          },
+          "401": {
+            "description": "Missing or invalid authentication.",
+            "schema": {}
+          },
+          "403": {
+            "description": "Authenticated identity lacks the required scope.",
+            "schema": {}
+          },
+          "409": {
+            "description": "Idempotency key was already used with different content.",
+            "schema": {}
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CreateEntryRequest"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "description": "Required idempotency key for this command.",
+            "in": "header",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LedgerService"
+        ]
+      }
+    },
+    "/v1/entries/{entryId}": {
+      "get": {
+        "operationId": "LedgerService_GetEntry",
+        "responses": {
+          "200": {
+            "description": "Entry owned by the authenticated merchant.",
+            "schema": {
+              "$ref": "#/definitions/v1GetEntryResponse"
+            }
+          },
+          "401": {
+            "description": "Missing or invalid authentication.",
+            "schema": {}
+          },
+          "403": {
+            "description": "Authenticated identity lacks the required scope.",
+            "schema": {}
+          },
+          "404": {
+            "description": "Entry absent or not owned by the authenticated merchant; the response does not reveal which.",
+            "schema": {}
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "entryId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LedgerService"
+        ]
+      }
+    },
+    "/v1/entries/{entryId}/reversals": {
+      "post": {
+        "summary": "Create an integral reversal",
+        "description": "Creates one confirmed compensating entry and marks the original entry as reversed without rewriting its history.",
+        "operationId": "LedgerService_CreateReversal",
+        "responses": {
+          "201": {
+            "description": "Compensating entry confirmed durably.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateReversalResponse"
+            }
+          },
+          "400": {
+            "description": "Reversal request is invalid or not permitted.",
+            "schema": {}
+          },
+          "401": {
+            "description": "Missing or invalid authentication.",
+            "schema": {}
+          },
+          "403": {
+            "description": "Authenticated identity lacks the required scope.",
+            "schema": {}
+          },
+          "404": {
+            "description": "Original entry absent or not owned by the authenticated merchant; the response does not reveal which.",
+            "schema": {}
+          },
+          "409": {
+            "description": "Idempotency conflict or the original entry was already reversed.",
+            "schema": {}
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "entryId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LedgerServiceCreateReversalBody"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "description": "Required idempotency key for this reversal command.",
+            "in": "header",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LedgerService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "LedgerServiceCreateReversalBody": {
+      "type": "object"
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1ConsolidationState": {
+      "type": "string",
+      "enum": [
+        "CONSOLIDATION_STATE_UNSPECIFIED",
+        "CONSOLIDATION_STATE_UPDATED",
+        "CONSOLIDATION_STATE_PROCESSING",
+        "CONSOLIDATION_STATE_DELAYED"
+      ],
+      "default": "CONSOLIDATION_STATE_UNSPECIFIED"
+    },
+    "v1CreateEntryRequest": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/v1EntryType"
+        },
+        "amount": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "businessDate": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "v1CreateEntryResponse": {
+      "type": "object",
+      "properties": {
+        "entry": {
+          "$ref": "#/definitions/v1LedgerEntry"
+        }
+      }
+    },
+    "v1CreateReversalResponse": {
+      "type": "object",
+      "properties": {
+        "reversal": {
+          "$ref": "#/definitions/v1LedgerEntry"
+        }
+      }
+    },
+    "v1DailyBalance": {
+      "type": "object",
+      "properties": {
+        "businessDate": {
+          "type": "string"
+        },
+        "sourcePosition": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "appliedPosition": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "state": {
+          "$ref": "#/definitions/v1ConsolidationState"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "definitive": {
+          "type": "boolean"
+        },
+        "data": {
+          "$ref": "#/definitions/v1DailyBalanceData",
+          "description": "Snapshot values, or null when a known pending date has no snapshot yet.",
+          "x-nullable": true
+        }
+      }
+    },
+    "v1DailyBalanceData": {
+      "type": "object",
+      "properties": {
+        "credits": {
+          "type": "string"
+        },
+        "debits": {
+          "type": "string"
+        },
+        "net": {
+          "type": "string"
+        },
+        "entryCount": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "closingBalance": {
+          "type": "string"
+        },
+        "snapshotAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "v1EntryState": {
+      "type": "string",
+      "enum": [
+        "ENTRY_STATE_UNSPECIFIED",
+        "ENTRY_STATE_CONFIRMED",
+        "ENTRY_STATE_REVERSED"
+      ],
+      "default": "ENTRY_STATE_UNSPECIFIED"
+    },
+    "v1EntryType": {
+      "type": "string",
+      "enum": [
+        "ENTRY_TYPE_UNSPECIFIED",
+        "ENTRY_TYPE_CREDIT",
+        "ENTRY_TYPE_DEBIT"
+      ],
+      "default": "ENTRY_TYPE_UNSPECIFIED"
+    },
+    "v1GetDailyBalancesResponse": {
+      "type": "object",
+      "properties": {
+        "balances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1DailyBalance"
+          }
+        }
+      }
+    },
+    "v1GetEntryResponse": {
+      "type": "object",
+      "properties": {
+        "entry": {
+          "$ref": "#/definitions/v1LedgerEntry"
+        }
+      }
+    },
+    "v1LedgerEntry": {
+      "type": "object",
+      "properties": {
+        "entryId": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/v1EntryType"
+        },
+        "amount": {
+          "type": "string",
+          "description": "Decimal BRL value with exactly two fractional digits, for example \"100.00\"."
+        },
+        "currency": {
+          "type": "string"
+        },
+        "businessDate": {
+          "type": "string",
+          "description": "Calendar date (YYYY-MM-DD) fixed when the entry is confirmed."
+        },
+        "description": {
+          "type": "string"
+        },
+        "confirmedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "merchantPosition": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "originalEntryId": {
+          "type": "string",
+          "description": "Set on a compensating entry; the compensation itself is a new CONFIRMED entry."
+        },
+        "reversalEntryId": {
+          "type": "string",
+          "description": "Set on an original entry after reversal. The original remains immutable and moves to REVERSED."
+        },
+        "state": {
+          "$ref": "#/definitions/v1EntryState"
+        }
+      }
+    },
+    "v1ListEntriesResponse": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1LedgerEntry"
+          }
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

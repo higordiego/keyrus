@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package cashflow.consolidation.public.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/higordiegoti/keyrus/gen/go/cashflow/consolidation/public/v1;consolidationv1";
+
+// ConsolidationService exposes daily balance queries through the edge HTTP adapter.
+service ConsolidationService {
+  rpc GetDailyBalances(GetDailyBalancesRequest) returns (GetDailyBalancesResponse) {
+    option (google.api.http) = {get: "/v1/daily-balances"};
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      responses: {
+        key: "200"
+        value: {
+          description: "Daily result envelopes. A known pending date can have data null while state and positions remain present."
+          schema: {
+            json_schema: {ref: ".cashflow.consolidation.public.v1.GetDailyBalancesResponse"}
+          }
+        }
+      }
+      responses: {
+        key: "400"
+        value: {description: "Invalid date or period."}
+      }
+      responses: {
+        key: "401"
+        value: {description: "Missing or invalid authentication."}
+      }
+      responses: {
+        key: "403"
+        value: {description: "Authenticated identity lacks the required scope."}
+      }
+      responses: {
+        key: "503"
+        value: {description: "No snapshot can be accessed or proven valid; no balance is presented."}
+      }
+    };
+  }
+}
+
+enum ConsolidationState {
+  CONSOLIDATION_STATE_UNSPECIFIED = 0;
+  CONSOLIDATION_STATE_UPDATED = 1;
+  CONSOLIDATION_STATE_PROCESSING = 2;
+  CONSOLIDATION_STATE_DELAYED = 3;
+}
+
+message GetDailyBalancesRequest {
+  string start_date = 1;
+  string end_date = 2;
+}
+
+message DailyBalance {
+  string business_date = 1;
+  reserved 2 to 7;
+  uint64 source_position = 8;
+  uint64 applied_position = 9;
+  ConsolidationState state = 10;
+  string reason = 11;
+  bool definitive = 12;
+  // Null when the date is known to be pending but no snapshot exists yet.
+  // State, reason, definitive, and positions remain available on this envelope.
+  DailyBalanceData data = 13 [(grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field) = {
+    description: "Snapshot values, or null when a known pending date has no snapshot yet."
+    extensions: {
+      key: "x-nullable"
+      value: {bool_value: true}
+    }
+  }];
+}
+
+message DailyBalanceData {
+  string credits = 1;
+  string debits = 2;
+  string net = 3;
+  uint64 entry_count = 4;
+  string closing_balance = 5;
+  google.protobuf.Timestamp snapshot_at = 6;
+}
+
+message GetDailyBalancesResponse {
+  repeated DailyBalance balances = 1;
+}

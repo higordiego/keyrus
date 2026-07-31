@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/higordiegoti/keyrus/api/events/ledger.entry.confirmed.v1.schema.json",
+  "title": "ledger.entry.confirmed.v1",
+  "description": "Persistent AMQP event emitted after a durable Ledger confirmation.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "occurred_at",
+    "merchant_id",
+    "merchant_position",
+    "entry_id",
+    "entry_type",
+    "amount_minor",
+    "currency",
+    "business_date",
+    "confirmed_at",
+    "original_entry_id",
+    "traceparent"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "format": "uuid"},
+    "event_type": {"const": "ledger.entry.confirmed.v1"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "merchant_id": {"type": "string", "format": "uuid"},
+    "merchant_position": {"type": "integer", "minimum": 1},
+    "entry_id": {"type": "string", "format": "uuid"},
+    "entry_type": {"enum": ["credit", "debit"]},
+    "amount_minor": {"type": "integer", "minimum": 1},
+    "currency": {"const": "BRL"},
+    "business_date": {"type": "string", "format": "date"},
+    "confirmed_at": {"type": "string", "format": "date-time"},
+    "original_entry_id": {"type": ["string", "null"], "format": "uuid"},
+    "traceparent": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    }
+  },
+  "additionalProperties": true
+}
+
