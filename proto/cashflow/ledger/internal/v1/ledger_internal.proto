@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package cashflow.ledger.internal.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/internal/v1;ledgerinternalv1";
+
+// LedgerInternalService is private gRPC. It must not be exposed through grpc-gateway.
+service LedgerInternalService {
+  rpc GetMerchantWatermark(GetMerchantWatermarkRequest) returns (GetMerchantWatermarkResponse);
+  rpc StreamEntriesAtCut(StreamEntriesAtCutRequest) returns (stream StreamEntriesAtCutResponse);
+}
+
+message GetMerchantWatermarkRequest {
+  string merchant_id = 1;
+}
+
+message GetMerchantWatermarkResponse {
+  string merchant_id = 1;
+  uint64 source_position = 2;
+  google.protobuf.Timestamp observed_at = 3;
+}
+
+message StreamEntriesAtCutRequest {
+  string merchant_id = 1;
+  uint64 source_position_cut = 2;
+}
+
+message StreamEntriesAtCutResponse {
+  LedgerEntry entry = 1;
+}
+
+enum EntryType {
+  ENTRY_TYPE_UNSPECIFIED = 0;
+  ENTRY_TYPE_CREDIT = 1;
+  ENTRY_TYPE_DEBIT = 2;
+}
+
+message LedgerEntry {
+  string entry_id = 1;
+  string merchant_id = 2;
+  uint64 merchant_position = 3;
+  EntryType type = 4;
+  int64 amount_minor = 5;
+  string currency = 6;
+  string business_date = 7;
+  google.protobuf.Timestamp confirmed_at = 8;
+  string original_entry_id = 9;
+}
