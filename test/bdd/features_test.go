@@ -79,8 +79,11 @@ func TestImplementedScenarios(t *testing.T) {
 func ensureRuntimeEvidence(t *testing.T) {
 	t.Helper()
 	if path := os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE"); path != "" {
-		if _, err := runtimeevidence.Load(path); err == nil {
-			return
+		root, rootErr := filepath.Abs(filepath.Join("..", ".."))
+		if rootErr == nil {
+			if _, err := runtimeevidence.LoadForSource(path, root); err == nil {
+				return
+			}
 		}
 	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -94,7 +97,7 @@ func ensureRuntimeEvidence(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("execute real runtime for Godog bindings: %v\n%s", err, output)
 	}
-	if _, err := runtimeevidence.Load(path); err != nil {
+	if _, err := runtimeevidence.LoadForSource(path, root); err != nil {
 		t.Fatalf("validate runtime evidence: %v", err)
 	}
 	t.Setenv("CASHFLOW_RUNTIME_EVIDENCE_FILE", path)

@@ -25,7 +25,7 @@ make bdd-parse
 go test -race ./test/bdd/...
 ```
 
-O resultado esperado é `14 features`, `81 unique scenarios` e `10 implemented`. A suíte Godog exige evidência emitida por Keycloak, KrakenD, imagens finais das APIs e Collector reais; sem esse artefato fresco ela própria executa o E2E. Isso não declara comportamento financeiro, persistência ou mensageria.
+O resultado esperado é `14 features`, `81 unique scenarios` e `10 implemented` (15 execuções após expandir os outlines T02). A suíte Godog exige evidência íntegra, fresca e específica por cenário/caso/oráculo, emitida por Keycloak, KrakenD, imagens finais das APIs, Collector e fault backend reais; sem esse artefato ela própria executa o E2E. Isso não declara comportamento financeiro, persistência ou mensageria.
 
 `make reports` gera `evidence/reports/bdd-catalog.json` e `evidence/reports/go-test.json`; o CI publica esses arquivos como artefato. Eles são saídas transitórias ignoradas pelo Git e não estão presentes em um clone até a geração.
 

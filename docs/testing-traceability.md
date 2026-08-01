@@ -4,7 +4,7 @@
 
 Os arquivos [`.feature`](../features/) são a fonte oficial. Esta matriz não repete passos; agrupa tags estáveis por capacidade e aponta o nível de teste e a evidência necessários.
 
-Todos os grupos abaixo estão **aprovados e parseados**, mas **pendentes de implementação**, porque `features/implemented_scenarios.txt` ainda não possui tags.
+Todos os grupos abaixo estão aprovados e parseados. O manifesto possui 10 tags T02 verificadas (`RNF06-001..003`, `RNF08-002..005`, `RNF08-008..009` e o aspecto comum de `RNF09-004`); as outras 71 permanecem pendentes.
 
 ## Matriz RF/RNF → SCN → teste → evidência
 
@@ -57,10 +57,10 @@ Depois da execução, o relatório deve listar a tag. A ausência da tag na evid
 |---|---|
 | Catálogo de 14 features/81 tags | Gerado por `make reports`/CI em `evidence/reports/bdd-catalog.json`; ignorado no clone |
 | Saída JSON dos testes Go | Gerada por `make reports`/CI em `evidence/reports/go-test.json`; ignorada no clone |
-| Resultado comportamental Godog por SCN | Ausente |
-| Bindings reais listados no manifesto | Ausente; manifesto vazio |
-| Integração/Testcontainers | Ausente |
+| Resultado comportamental Godog por SCN | 10 tags/15 execuções T02 consomem resultado estruturado por caso e oráculo; Cucumber/JUnit ainda ausente |
+| Bindings reais listados no manifesto | 10 tags T02; 71 tags pendentes |
+| Integração/Testcontainers | Keycloak, KrakenD, imagens finais Ledger/Consolidation, Collector e fault backend do T02 |
 | Falha, outbox, DLQ e reconciliação | Ausente |
-| Testes multi-tenant executados | Ausente |
+| Testes multi-tenant executados | T02 cobre identidade, isolamento e anti-enumeração; regras financeiras permanecem fora |
 | Script e relatório k6 | Ausente |
-| Traces, métricas e alertas de aceite | Ausente |
+| Traces, métricas e alertas de aceite | T02 cobre correlação HTTP→gRPC, redaction e sanitização; alertas permanecem futuros |

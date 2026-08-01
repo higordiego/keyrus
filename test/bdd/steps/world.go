@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/cucumber/godog"
@@ -51,7 +52,7 @@ func issuer() (*authtest.Issuer, error) {
 type world struct {
 	evidence    runtimeevidence.Evidence
 	scenarioTag string
-	stepCount   int
+	caseID      string
 	issuer      *authtest.Issuer
 	service     *protectedapi.Service
 
@@ -90,7 +91,7 @@ func newWorld() *world {
 }
 
 func (w *world) prepare(scenario *godog.Scenario) error {
-	evidence, err := runtimeevidence.Load(os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE"))
+	evidence, err := runtimeevidence.LoadForSource(os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE"), filepath.Join("..", ".."))
 	if err != nil {
 		return fmt.Errorf("load real runtime evidence: %w", err)
 	}
@@ -104,19 +105,18 @@ func (w *world) prepare(scenario *godog.Scenario) error {
 		return fmt.Errorf("scenario %q has no real runtime evidence", scenario.Name)
 	}
 	w.evidence = evidence
-	return w.runtimeStep()
-}
-
-func (w *world) runtimeStep() error {
-	scenario, present := w.evidence.Scenarios[w.scenarioTag]
-	if !present || len(scenario.Assertions) == 0 {
-		return fmt.Errorf("%s has no runtime assertions", w.scenarioTag)
-	}
-	w.stepCount++
+	w.caseID = runtimeevidence.DefaultCase
 	return nil
 }
 
-func (w *world) runtimeStepWithCondition(string) error { return w.runtimeStep() }
+func (w *world) require(oracle string) error {
+	return runtimeevidence.Require(w.evidence, w.scenarioTag, w.caseID, oracle)
+}
+
+func (w *world) requireCondition(condition string) error {
+	w.caseID = condition
+	return w.require("condition_exercised")
+}
 
 func (w *world) release() {
 	if w.harness != nil {
