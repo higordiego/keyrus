@@ -3,6 +3,7 @@ package krakendconfig
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -76,6 +77,7 @@ func DefaultPolicy() Policy {
 			"GET /realms/cashflow/.well-known/openid-configuration": {},
 			"GET /realms/cashflow/protocol/openid-connect/certs":    {},
 			"GET /realms/cashflow/protocol/openid-connect/auth":     {},
+			"POST /realms/cashflow/login-actions/{action}":          {},
 			"POST /realms/cashflow/protocol/openid-connect/token":   {},
 			"GET /realms/cashflow/protocol/openid-connect/userinfo": {},
 			"POST /realms/cashflow/protocol/openid-connect/logout":  {},
@@ -91,6 +93,7 @@ func DefaultPolicy() Policy {
 			"GET /v1/entries":                                     {},
 			"GET /v1/daily-balances":                              {},
 			"POST /realms/cashflow/protocol/openid-connect/token": {},
+			"POST /realms/cashflow/login-actions/{action}":        {},
 		},
 		ForbiddenPathFragments: []string{
 			"/admin",
@@ -329,6 +332,8 @@ func validateValidator(route string, validator JWTValidator, requiredScopes []st
 	}
 	if validator.JWKURL == "" {
 		violations = append(violations, Violation{RuleJWTPolicy, route, "no jwk_url is configured"})
+	} else if parsed, err := url.Parse(validator.JWKURL); err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		violations = append(violations, Violation{RuleJWTPolicy, route, "jwk_url must use HTTPS with an explicit host"})
 	}
 	if validator.Issuer != policy.Issuer {
 		violations = append(violations, Violation{RuleJWTPolicy, route, "issuer is " + validator.Issuer + ", expected " + policy.Issuer})

@@ -36,12 +36,13 @@ func (w *world) startPrivateSurface() error {
 		return err
 	}
 	harness, err := internalgrpc.Start(internalgrpc.Options{
-		Verifier:        verifier,
-		RequireMTLS:     true,
-		RequireDeadline: true,
-		MaxDeadline:     internalMaxDeadline,
-		MaxRecvMsgBytes: internalMaxMsgBytes,
-		SourcePosition:  42,
+		Verifier:          verifier,
+		RequireMTLS:       true,
+		RequireDeadline:   true,
+		MaxDeadline:       internalMaxDeadline,
+		MaxRecvMsgBytes:   internalMaxMsgBytes,
+		SourcePosition:    42,
+		TenantDelegations: map[string][]string{"cashflow-consolidation-svc": {merchantA}},
 	})
 	if err != nil {
 		return err
@@ -52,9 +53,10 @@ func (w *world) startPrivateSurface() error {
 
 func (w *world) serviceToken(scopes ...string) (string, error) {
 	return w.issuer.Mint(authtest.TokenOptions{
-		Subject:  "service-account-cashflow-consolidation-svc",
-		Audience: []string{internalAudience},
-		Scopes:   scopes,
+		Subject:     "service-account-cashflow-consolidation-svc",
+		Audience:    []string{internalAudience},
+		Scopes:      scopes,
+		ExtraClaims: map[string]any{"azp": "cashflow-consolidation-svc"},
 	})
 }
 
@@ -265,7 +267,7 @@ func (w *world) thenNoCredentialValueOrDescriptionAppearsInTelemetry() error {
 	if !strings.Contains(w.logOutput, w.internalNote[3:35]) {
 		return fmt.Errorf("telemetry dropped the trace correlation, which must survive redaction: %s", w.logOutput)
 	}
-	if calls := w.harness.ObservedCalls(); len(calls) > 0 && calls[0].MerchantID != "" {
+	if calls := w.harness.ObservedCalls(); len(calls) > 0 && calls[0].IdentityMerchantID != "" {
 		return fmt.Errorf("a service identity carried a merchant claim into the private surface")
 	}
 	return nil

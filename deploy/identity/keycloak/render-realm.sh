@@ -70,5 +70,16 @@ case "$rendered" in
 esac
 
 umask 077
-printf '%s\n' "$rendered" >"$OUTPUT"
+temporary=$(mktemp "${OUTPUT}.tmp.XXXXXX")
+cleanup() {
+	rm -f -- "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
+chmod 0600 "$temporary"
+printf '%s\n' "$rendered" >"$temporary"
+# The temporary file lives beside the destination, so rename is atomic. It also
+# replaces a permissive pre-existing file or symlink instead of inheriting its
+# mode while truncating it in place.
+mv -f -- "$temporary" "$OUTPUT"
+trap - EXIT HUP INT TERM
 echo "render-realm.sh: wrote $OUTPUT"

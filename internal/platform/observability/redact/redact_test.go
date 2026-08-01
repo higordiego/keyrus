@@ -4,12 +4,36 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/higordiegoti/keyrus/internal/platform/observability/redact"
 )
+
+type dangerousRecord struct {
+	Authorization string         `json:"authorization"`
+	Description   string         `json:"description"`
+	Nested        map[string]any `json:"nested"`
+}
+
+type dangerousLogValuer struct{}
+
+func (dangerousLogValuer) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("authorization", "Bearer "+sampleJWT),
+		slog.Any("items", []any{map[string]any{"amount": "100.00", "entry_id": "entry-1"}}),
+	)
+}
+
+type conflictingValuer struct{}
+
+func (conflictingValuer) String() string { return "unsafe-string-view" }
+
+func (conflictingValuer) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("authorization", "Bearer "+sampleJWT))
+}
 
 const sampleJWT = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJtZXJjaGFudC1hIn0.c2lnbmF0dXJlLXZhbHVl"
 
@@ -128,5 +152,35 @@ func TestLogHandlerDelegatesLevelDecisions(t *testing.T) {
 	}
 	if !handler.Enabled(context.Background(), slog.LevelError) {
 		t.Error("error was disabled although the wrapped handler allows it")
+	}
+}
+
+func TestLogHandlerDeeplyRedactsAnyValues(t *testing.T) {
+	t.Parallel()
+	var buffer bytes.Buffer
+	logger := slog.New(redact.NewHandler(slog.NewJSONHandler(&buffer, nil)))
+
+	logger.Error("adapter failure",
+		slog.Any("error", fmt.Errorf("upstream echoed Bearer %s", sampleJWT)),
+		slog.Any("payload", dangerousRecord{
+			Authorization: "Bearer " + sampleJWT,
+			Description:   "fornecedor confidencial",
+			Nested: map[string]any{
+				"idempotency-key": "secret-key",
+				"values":          []any{map[string]string{"closing_balance": "-30.00"}},
+			},
+		}),
+		slog.Any("valuer", dangerousLogValuer{}),
+		slog.Any("conflicting_valuer", conflictingValuer{}),
+	)
+
+	output := buffer.String()
+	for _, forbidden := range []string{sampleJWT, "fornecedor confidencial", "secret-key", "100.00", "-30.00", "unsafe-string-view"} {
+		if strings.Contains(output, forbidden) {
+			t.Errorf("deep log output leaked %q: %s", forbidden, output)
+		}
+	}
+	if !strings.Contains(output, "entry-1") {
+		t.Errorf("safe correlation value was removed: %s", output)
 	}
 }

@@ -22,6 +22,8 @@ const (
 	internalAudience = "cashflow-internal-api"
 	publicAudience   = "cashflow-public-api"
 	merchantID       = "11111111-1111-4111-8111-111111111111"
+	otherMerchantID  = "22222222-2222-4222-8222-222222222222"
+	internalClientID = "cashflow-consolidation-svc"
 )
 
 type privateSurfaceFixture struct {
@@ -56,9 +58,10 @@ func startPrivateSurface(t *testing.T, options internalgrpc.Options) privateSurf
 func (f privateSurfaceFixture) serviceToken(t *testing.T, scopes ...string) string {
 	t.Helper()
 	token, err := f.issuer.Mint(authtest.TokenOptions{
-		Subject:  "service-account-cashflow-consolidation-svc",
-		Audience: []string{internalAudience},
-		Scopes:   scopes,
+		Subject:     "service-account-cashflow-consolidation-svc",
+		Audience:    []string{internalAudience},
+		Scopes:      scopes,
+		ExtraClaims: map[string]any{"azp": internalClientID},
 	})
 	if err != nil {
 		t.Fatalf("mint service token: %v", err)
@@ -82,10 +85,11 @@ func (f privateSurfaceFixture) connect(t *testing.T, token string) *grpc.ClientC
 
 func defaultOptions() internalgrpc.Options {
 	return internalgrpc.Options{
-		RequireMTLS:     true,
-		RequireDeadline: true,
-		MaxDeadline:     2 * time.Second,
-		SourcePosition:  42,
+		RequireMTLS:       true,
+		RequireDeadline:   true,
+		MaxDeadline:       2 * time.Second,
+		SourcePosition:    42,
+		TenantDelegations: map[string][]string{internalClientID: {merchantID}},
 	}
 }
 
@@ -109,8 +113,11 @@ func TestWatermarkRPCAdmitsAValidServiceIdentity(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("observed calls: got %d, want 1", len(calls))
 	}
-	if calls[0].MerchantID != "" {
-		t.Errorf("a service identity carried a merchant claim: %q", calls[0].MerchantID)
+	if calls[0].MerchantID != merchantID {
+		t.Errorf("requested merchant: got %q, want %q", calls[0].MerchantID, merchantID)
+	}
+	if calls[0].IdentityMerchantID != "" {
+		t.Errorf("a service identity carried a merchant claim: %q", calls[0].IdentityMerchantID)
 	}
 	if !calls[0].HadDeadline {
 		t.Error("the accepted call reached the service without a deadline")
@@ -157,9 +164,10 @@ func TestWatermarkRPCRefusesCallersWithoutAValidServiceIdentity(t *testing.T) {
 		t.Parallel()
 		fixture := startPrivateSurface(t, defaultOptions())
 		publicToken, err := fixture.issuer.Mint(authtest.TokenOptions{
-			Subject:  "service-account-cashflow-consolidation-svc",
-			Audience: []string{publicAudience},
-			Scopes:   []string{auth.ScopeLedgerInternal},
+			Subject:     "service-account-cashflow-consolidation-svc",
+			Audience:    []string{publicAudience},
+			Scopes:      []string{auth.ScopeLedgerInternal},
+			ExtraClaims: map[string]any{"azp": internalClientID},
 		})
 		if err != nil {
 			t.Fatalf("mint public token: %v", err)
@@ -226,6 +234,20 @@ func TestWatermarkRPCRefusesCallersWithoutAValidServiceIdentity(t *testing.T) {
 			t.Fatal("a peer without a client certificate reached the private RPC")
 		}
 	})
+}
+
+func TestWatermarkRPCRefusesAServiceWithoutTenantDelegation(t *testing.T) {
+	t.Parallel()
+	fixture := startPrivateSurface(t, defaultOptions())
+	connection := fixture.connect(t, fixture.serviceToken(t, auth.ScopeLedgerInternal))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := internalgrpc.GetWatermark(ctx, connection, otherMerchantID)
+	assertCode(t, err, codes.PermissionDenied)
+	if calls := fixture.harness.ObservedCalls(); len(calls) != 0 {
+		t.Fatalf("tenant refusal reached the service: %v", calls)
+	}
 }
 
 func TestRefusedInternalCallsNeverReachTheService(t *testing.T) {
@@ -344,7 +366,7 @@ func TestStreamingRPCAppliesTheSamePolicy(t *testing.T) {
 	t.Run("valid service identity", func(t *testing.T) {
 		t.Parallel()
 		fixture := startPrivateSurface(t, defaultOptions())
-		connection := fixture.connect(t, fixture.serviceToken(t, auth.ScopeLedgerInternal))
+		connection := fixture.connect(t, fixture.serviceToken(t, auth.ScopeLedgerInternal, auth.ScopeOpsReconcile))
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -361,7 +383,7 @@ func TestStreamingRPCAppliesTheSamePolicy(t *testing.T) {
 	t.Run("missing scope", func(t *testing.T) {
 		t.Parallel()
 		fixture := startPrivateSurface(t, defaultOptions())
-		connection := fixture.connect(t, fixture.serviceToken(t, auth.ScopeOpsReconcile))
+		connection := fixture.connect(t, fixture.serviceToken(t, auth.ScopeLedgerInternal))
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

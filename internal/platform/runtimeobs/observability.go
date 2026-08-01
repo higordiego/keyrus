@@ -1,0 +1,117 @@
+// Package runtimeobs supplies the minimum health, metrics and structured
+// telemetry shared by the T02 adapters. It deliberately contains no business
+// metric or domain rule.
+package runtimeobs
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync/atomic"
+	"time"
+
+	"github.com/higordiegoti/keyrus/internal/platform/observability/tracecontext"
+)
+
+type Metrics struct {
+	requests           atomic.Uint64
+	rejections         atomic.Uint64
+	failures           atomic.Uint64
+	idempotencyHeaders atomic.Uint64
+	traceHeaders       atomic.Uint64
+}
+
+func (m *Metrics) Observe(request *http.Request, status int) {
+	m.requests.Add(1)
+	if request.Header.Get("Idempotency-Key") != "" {
+		m.idempotencyHeaders.Add(1)
+	}
+	if _, err := tracecontext.ParseTraceParent(request.Header.Get(tracecontext.TraceParentHeader)); err == nil {
+		m.traceHeaders.Add(1)
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		m.rejections.Add(1)
+	}
+	if status >= 500 {
+		m.failures.Add(1)
+	}
+}
+
+// Handler exposes Prometheus text format only on the management listener.
+func (m *Metrics) Handler(service string) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		_, _ = fmt.Fprintf(writer,
+			"cashflow_http_requests_total{service=%q} %d\n"+
+				"cashflow_http_rejections_total{service=%q} %d\n"+
+				"cashflow_http_failures_total{service=%q} %d\n"+
+				"cashflow_http_idempotency_header_total{service=%q} %d\n"+
+				"cashflow_http_trace_header_total{service=%q} %d\n",
+			service, m.requests.Load(), service, m.rejections.Load(), service, m.failures.Load(),
+			service, m.idempotencyHeaders.Load(), service, m.traceHeaders.Load())
+	})
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *responseRecorder) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(body)
+}
+
+// Middleware records an actual adapter exchange without request headers or
+// payload fields, keeping the log safe by construction.
+func Middleware(service string, metrics *Metrics, logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		started := time.Now()
+		recorder := &responseRecorder{ResponseWriter: writer}
+		next.ServeHTTP(recorder, request)
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		metrics.Observe(request, status)
+		attributes := []any{
+			slog.String("service", service),
+			slog.String("method", request.Method),
+			slog.String("path", request.URL.Path),
+			slog.Int("status", status),
+			slog.Duration("duration", time.Since(started)),
+		}
+		if span, _, ok := tracecontext.FromContext(request.Context()); ok {
+			attributes = append(attributes, slog.String("trace_id", span.TraceID))
+		} else if span, err := tracecontext.ParseTraceParent(request.Header.Get(tracecontext.TraceParentHeader)); err == nil {
+			attributes = append(attributes, slog.String("trace_id", span.TraceID))
+		}
+		logger.InfoContext(request.Context(), "HTTP request completed", attributes...)
+	})
+}
+
+// ManagementHandler keeps health and metrics off the public adapter listener.
+func ManagementHandler(service string, ready func() bool, metrics *Metrics) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health/live", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /health/ready", func(writer http.ResponseWriter, _ *http.Request) {
+		if !ready() {
+			http.Error(writer, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	mux.Handle("GET /metrics", metrics.Handler(service))
+	return mux
+}

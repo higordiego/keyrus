@@ -101,6 +101,15 @@ func TestValidateRejectsDisabledJWKSecurity(t *testing.T) {
 	assertViolation(t, config, krakendconfig.RuleJWTPolicy, "disable_jwk_security")
 }
 
+func TestValidateRejectsInsecureJWKTransport(t *testing.T) {
+	t.Parallel()
+	config := mutate(t, func(document map[string]any) {
+		validator := findValidator(t, document, "GET", "/v1/entries")
+		validator["jwk_url"] = "http://keycloak:8080/realms/cashflow/protocol/openid-connect/certs"
+	})
+	assertViolation(t, config, krakendconfig.RuleJWTPolicy, "HTTPS")
+}
+
 func TestValidateRejectsForeignIssuer(t *testing.T) {
 	t.Parallel()
 	config := mutate(t, func(document map[string]any) {
