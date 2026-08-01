@@ -19,7 +19,7 @@ TRIVY_VERSION := v0.72.0
 
 export PATH := $(TOOLS_BIN):$(PATH)
 
-.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test bdd-parse reports ci policy security build-validation full-validation clean-reports
+.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports
 
 all: ci
 
@@ -82,7 +82,16 @@ lint: proto-lint
 	go vet ./...
 
 test:
-	go test -race ./...
+	go test -race -count=1 ./...
+
+integration:
+	@mkdir -p evidence/reports/integration
+	@report=evidence/reports/integration/postgresql.log; \
+	go test -race -count=1 -v ./services/consolidation/internal/adapters/outbound/postgres ./test/bdd > "$$report" 2>&1; \
+	status=$$?; cat "$$report"; exit $$status
+
+bdd:
+	go test -race -count=1 -v ./test/bdd
 
 bdd-parse:
 	go run ./cmd/bddcheck -features features -manifest features/implemented_scenarios.txt
@@ -93,7 +102,7 @@ clean-reports:
 reports:
 	./scripts/ci-reports.sh
 
-ci: check-go-version generate-check format-check lint proto-breaking build test bdd-parse
+ci: check-go-version generate-check format-check lint proto-breaking build test integration bdd-parse
 
 policy: check-go-version
 	./scripts/run-gate.sh policy policy ./scripts/policy-gate.sh "$(ACTIONLINT)"
