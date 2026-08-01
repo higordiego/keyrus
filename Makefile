@@ -75,8 +75,6 @@ clean-reports:
 	rm -f evidence/reports/go-test.json evidence/reports/bdd-catalog.json
 
 reports:
-	mkdir -p evidence/reports
-	go test -race -json ./... > evidence/reports/go-test.json
-	go run ./cmd/bddcheck -features features -manifest features/implemented_scenarios.txt -json > evidence/reports/bdd-catalog.json
+	@./scripts/generate-reports.sh "$(CURDIR)/evidence/reports"
 
 ci: check-go-version generate-check format-check lint proto-breaking build test bdd-parse

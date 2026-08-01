@@ -67,9 +67,11 @@ Quando selecionado, um cenário com step `undefined`, `pending`, `ambiguous` ou 
 
 O Godog v0.15.1 usa filtro Behat legado. Múltiplas tags do manifesto são unidas por vírgula (`@A,@B`) para representar OR; palavras como `or` e parênteses viram parte de uma tag literal. Um teste de política executa duas tags e protege essa compatibilidade.
 
-O `bddguard` analisa todos os arquivos do mesmo package e exige que cada registro aponte diretamente para uma função local, um método local de nome unívoco ou uma função inline não trivial. Se o corpo não puder ser resolvido, falha fechado com `cannot be resolved within its package`. Selector de package importado é reconhecido antes da busca de métodos locais, evitando aprovação por colisão de nome.
+O `bddguard` analisa todos os arquivos do mesmo package e exige que cada registro aponte diretamente para uma função local, um método local de nome unívoco ou uma função inline não trivial. A ligação lexical impede que uma closure sombreada reutilize por nome o corpo de uma função top-level. Selectors só são aceitos quando o receptor é uma variável local comprovada; package imports, inclusive paths versionados cujo package name difere do basename, falham fechado antes da busca por método homônimo.
 
-Esta análise AST deliberadamente não usa tipos: métodos homônimos em receptores diferentes e factories como `makeHandler(dep)` são rejeitados. Steps dos próximos tickets devem usar nomes unívocos e referências diretas; suportar esses padrões exige evolução posterior com análise de tipos, fora do T01.
+O guard percorre delegações locais diretas e rejeita wrappers que terminam em no-op, bem como handlers que apenas alteram e conferem estado criado dentro do próprio corpo. Casos positivos precisam mostrar mutação de fixture/dependência externa, chamada não local ou asserção contra entrada recebida pelo handler. Isso é uma barreira estática contra formas vacuamente bem-sucedidas, não um oráculo de negócio: fixture real, chamada ao componente e asserção independente continuam obrigatórias por tag e em runtime.
+
+Esta análise AST deliberadamente não usa tipos: métodos homônimos em receptores diferentes, funções armazenadas em variáveis e factories como `makeHandler(dep)` são rejeitados. Steps dos próximos tickets devem usar nomes unívocos e referências diretas; suportar esses padrões exige evolução posterior com análise de tipos.
 
 ### Estado atual do wiring
 
@@ -93,13 +95,13 @@ A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a 
 | Rodar a suíte implementada | `go test -race ./test/bdd -run '^TestImplementedScenarios$' -v` | todos os cenários do manifesto passam; atualmente o runner comprova que a seleção vazia é rejeitada sem executar comportamento |
 | Rodar todos os testes Go | `go test -race ./...` | todos os pacotes verdes; pode depender de gerados/recortes ainda em construção |
 | Rodar gates do repositório | `make ci` | geração, formato, contratos, build, testes e catálogo verdes |
-| Gerar relatórios básicos | `make reports` | `evidence/reports/go-test.json` e `bdd-catalog.json` produzidos localmente; ambos são ignorados pelo Git |
+| Gerar relatórios básicos | `make reports` | limpa evidência anterior, executa os dois produtores mesmo se um falhar, preserva o primeiro código de falha e produz `go-test.json` e `bdd-catalog.json`; ambos são ignorados pelo Git |
 
 Não edite o manifesto apenas para selecionar temporariamente um cenário. Até existir um filtro explícito, a seleção oficial é versionada e representa compromisso de implementação.
 
 ## Execução no CI
 
-O workflow `.github/workflows/ci.yml` executa `make ci`, chama `make reports` mesmo após falha e publica `evidence/reports/` no artefato `foundation-reports`. `bdd-catalog.json` e `go-test.json` são gerados por esse fluxo e por `make reports`; como são ignorados pelo Git, um clone limpo contém apenas `.gitkeep` até o comando ser executado.
+O workflow `.github/workflows/ci.yml` executa `make ci`, chama `make reports` mesmo após falha e publica `evidence/reports/` no artefato `foundation-reports`. O target remove os dois arquivos anteriores antes de iniciar, executa ambos os produtores independentemente e retorna falha agregada sem reaproveitar evidência residual. `bdd-catalog.json` e `go-test.json` são ignorados pelo Git; um clone limpo contém apenas `.gitkeep` até o comando ser executado.
 
 O gate de BDD deve distinguir:
 
