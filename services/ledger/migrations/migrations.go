@@ -170,10 +170,23 @@ SELECT to_regclass('ledger.merchant_position') IS NOT NULL
          AND contype = 'f'
    )
    AND EXISTS (
-       SELECT 1 FROM pg_trigger
-       WHERE tgrelid = to_regclass('ledger.ledger_entry')
-         AND tgname = 'ledger_entry_immutable'
-         AND NOT tgisinternal
+       SELECT 1
+       FROM pg_trigger t
+       JOIN pg_proc p ON p.oid = t.tgfoid
+       JOIN pg_language l ON l.oid = p.prolang
+       WHERE t.tgrelid = to_regclass('ledger.ledger_entry')
+         AND t.tgname = 'ledger_entry_immutable'
+         AND NOT t.tgisinternal
+         AND t.tgenabled = 'O'
+         AND t.tgtype = 27
+         AND t.tgfoid = to_regprocedure('ledger.reject_ledger_entry_mutation()')
+         AND l.lanname = 'plpgsql'
+         AND p.prorettype = 'trigger'::regtype
+         AND p.pronargs = 0
+         AND NOT p.prosecdef
+         AND btrim(regexp_replace(
+             p.prosrc, '[[:space:]]+', ' ', 'g'
+         )) = 'BEGIN RAISE EXCEPTION ''ledger entries are immutable'' USING ERRCODE = ''55000''; END;'
    )
    AND NOT EXISTS (
        SELECT 1 FROM pg_constraint

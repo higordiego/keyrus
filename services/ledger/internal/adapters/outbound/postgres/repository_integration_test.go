@@ -58,7 +58,14 @@ func TestMain(m *testing.M) {
 				"POSTGRES_USER":     "ledger_test",
 				"POSTGRES_PASSWORD": "ledger_test",
 			},
-			WaitingFor: wait.ForListeningPort("5432/tcp").WithStartupTimeout(90 * time.Second),
+			WaitingFor: wait.ForAll(
+				wait.ForLog("database system is ready to accept connections").
+					WithOccurrence(2).
+					WithPollInterval(100*time.Millisecond),
+				wait.ForExec([]string{
+					"pg_isready", "-U", "ledger_test", "-d", "cashflow",
+				}).WithPollInterval(100*time.Millisecond),
+			).WithDeadline(90 * time.Second),
 			SkipReaper: true,
 		},
 		Started: true,
@@ -127,15 +134,60 @@ func openTestPool(ctx context.Context, hostPort, user, password, database string
 		return nil, fmt.Errorf("parse PostgreSQL DSN: %w", err)
 	}
 	config.MaxConns = 32
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return nil, err
+	readyContext, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	backoff := 50 * time.Millisecond
+	var lastError error
+	for {
+		pool, err := pgxpool.NewWithConfig(readyContext, config.Copy())
+		if err == nil {
+			err = pool.Ping(readyContext)
+		}
+		if err == nil {
+			return pool, nil
+		}
+		if pool != nil {
+			pool.Close()
+		}
+		lastError = err
+		if !retryablePostgresStartupError(err) {
+			return nil, err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-readyContext.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("wait for PostgreSQL SQL readiness: %w (last error: %v)", readyContext.Err(), lastError)
+		case <-timer.C:
+		}
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+			if backoff > 500*time.Millisecond {
+				backoff = 500 * time.Millisecond
+			}
+		}
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, err
+}
+
+func retryablePostgresStartupError(err error) bool {
+	var postgresError *pgconn.PgError
+	var networkError net.Error
+	return pgconn.SafeToRetry(err) ||
+		errors.As(err, &networkError) ||
+		(errors.As(err, &postgresError) && postgresError.Code == "57P03")
+}
+
+func TestPostgresStartupRetryClassification(t *testing.T) {
+	t.Parallel()
+	if !retryablePostgresStartupError(&pgconn.PgError{Code: "57P03"}) {
+		t.Fatal("database-starting SQLSTATE must be retried")
 	}
-	return pool, nil
+	if !retryablePostgresStartupError(&net.OpError{Op: "read", Net: "tcp", Err: errors.New("reset")}) {
+		t.Fatal("startup transport reset must be retried")
+	}
+	if retryablePostgresStartupError(&pgconn.PgError{Code: "28P01"}) {
+		t.Fatal("authentication failure must fail immediately")
+	}
 }
 
 type fixedClock struct {
@@ -887,32 +939,45 @@ func TestMigrationUpgradeFromPublished000001PreservesData(t *testing.T) {
 	)
 	if _, err := upgradePool.Exec(ctx, `
 INSERT INTO ledger.merchant_position (merchant_id, last_position, updated_at)
-VALUES ($1, 2, '2026-07-31T12:00:00Z'), ($2, 1, '2026-07-31T12:00:00Z');
+VALUES ($1, 2, '2026-07-31T12:00:00Z'), ($2, 1, '2026-07-31T12:00:00Z')`,
+		merchantA, merchantB,
+	); err != nil {
+		t.Fatalf("seed legacy merchant positions: %v", err)
+	}
+	if _, err := upgradePool.Exec(ctx, `
 INSERT INTO ledger.ledger_entry (
     id, merchant_id, position, entry_type, amount_minor, currency,
     business_date, description, confirmed_at, original_entry_id
 ) VALUES
     ($3, $1, 1, 'credit', 12345, 'BRL', '2026-07-31', 'legacy-a1', '2026-07-31T12:00:00Z', NULL),
     ($4, $1, 2, 'debit', 345, 'BRL', '2026-07-31', 'legacy-a2', '2026-07-31T12:01:00Z', NULL),
-    ($5, $2, 1, 'credit', 999, 'BRL', '2026-07-31', 'legacy-b1', '2026-07-31T12:02:00Z', NULL);
+    ($5, $2, 1, 'credit', 999, 'BRL', '2026-07-31', 'legacy-b1', '2026-07-31T12:02:00Z', NULL)`,
+		merchantA, merchantB, entryA1, entryA2, entryB1,
+	); err != nil {
+		t.Fatalf("seed legacy entries: %v", err)
+	}
+	if _, err := upgradePool.Exec(ctx, `
 INSERT INTO ledger.idempotency_record (
     attempt_id, merchant_id, operation, key_hash, request_hash,
     entry_id, response_payload, created_at, completed_at
 ) VALUES (
     '018f0000-0000-7000-8000-000000008301', $1, 'create_entry',
     decode(repeat('11', 32), 'hex'), decode(repeat('22', 32), 'hex'),
-    $3, '{"entry_id":"018f0000-0000-7000-8000-000000008101"}'::jsonb,
+    $2, '{"entry_id":"018f0000-0000-7000-8000-000000008101"}'::jsonb,
     '2026-07-31T12:00:00Z', '2026-07-31T12:00:00Z'
-);
+)`, merchantA, entryA1); err != nil {
+		t.Fatalf("seed legacy idempotency response: %v", err)
+	}
+	if _, err := upgradePool.Exec(ctx, `
 INSERT INTO ledger.outbox_event (
     event_id, aggregate_id, merchant_id, merchant_position,
     event_type, payload, occurred_at, created_at, available_at
 ) VALUES (
-    '018f0000-0000-7000-8000-000000008401', $3, $1, 1,
+    '018f0000-0000-7000-8000-000000008401', $2, $1, 1,
     'ledger.entry.confirmed.v1', '{"legacy":true}'::jsonb,
     '2026-07-31T12:00:00Z', '2026-07-31T12:00:00Z', '2026-07-31T12:00:00Z'
-);`, merchantA, merchantB, entryA1, entryA2, entryB1); err != nil {
-		t.Fatalf("seed published 000001 data: %v", err)
+)`, merchantA, entryA1); err != nil {
+		t.Fatalf("seed legacy outbox event: %v", err)
 	}
 
 	if err := migrations.Apply(ctx, upgradePool); err != nil {
@@ -1007,30 +1072,62 @@ INSERT INTO ledger.outbox_event (
 }
 
 func TestMigrationUpgradeRejectsUnrecognizedLegacyDrift(t *testing.T) {
-	ctx := context.Background()
-	driftPool := newDisposableDatabase(t, "ledger_migration_legacy_drift")
-	installPublished000001(t, driftPool)
-	if _, err := driftPool.Exec(ctx, `
-ALTER TABLE ledger.outbox_event
-DROP CONSTRAINT outbox_event_aggregate_id_fkey`); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		database string
+		mutate   string
+	}{
+		{
+			name:     "missing historical constraint",
+			database: "ledger_migration_drift_constraint",
+			mutate: `ALTER TABLE ledger.outbox_event
+DROP CONSTRAINT outbox_event_aggregate_id_fkey`,
+		},
+		{
+			name:     "disabled immutable trigger",
+			database: "ledger_migration_drift_trigger",
+			mutate: `ALTER TABLE ledger.ledger_entry
+DISABLE TRIGGER ledger_entry_immutable`,
+		},
+		{
+			name:     "modified immutable function",
+			database: "ledger_migration_drift_function",
+			mutate: `CREATE OR REPLACE FUNCTION ledger.reject_ledger_entry_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'modified immutable guard' USING ERRCODE = '55000';
+END;
+$$`,
+		},
 	}
-	if err := migrations.Apply(ctx, driftPool); err == nil ||
-		!strings.Contains(err.Error(), "unrecognized legacy ledger schema drift") {
-		t.Fatalf("migration accepted unrecognized legacy drift: %v", err)
-	}
-	var checksumColumnExists bool
-	if err := driftPool.QueryRow(ctx, `
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			driftPool := newDisposableDatabase(t, test.database)
+			installPublished000001(t, driftPool)
+			if _, err := driftPool.Exec(ctx, test.mutate); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrations.Apply(ctx, driftPool); err == nil ||
+				!strings.Contains(err.Error(), "unrecognized legacy ledger schema drift") {
+				t.Fatalf("migration accepted unrecognized legacy drift: %v", err)
+			}
+			var checksumColumnExists bool
+			if err := driftPool.QueryRow(ctx, `
 SELECT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'ledger'
       AND table_name = 'schema_migration'
       AND column_name = 'checksum'
 )`).Scan(&checksumColumnExists); err != nil {
-		t.Fatal(err)
-	}
-	if checksumColumnExists {
-		t.Fatal("failed legacy upgrade left checksum metadata behind")
+				t.Fatal(err)
+			}
+			if checksumColumnExists {
+				t.Fatal("failed legacy upgrade left checksum metadata behind")
+			}
+		})
 	}
 }
 
