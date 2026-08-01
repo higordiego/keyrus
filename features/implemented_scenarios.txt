@@ -1,3 +1,21 @@
 # One @SCN-* tag per line. Only tags in this manifest are executed by Godog.
-# T01 intentionally has no business step implementations, so the manifest is empty.
 # Adding a tag without a real binding makes the strict Godog suite fail.
+#
+# T02 implements the edge, identity and security scenarios. Every other tag in
+# the catalogue remains an approved specification, not an executed test.
+
+# RNF-06 — authentication and tenant isolation
+@SCN-RNF06-001
+@SCN-RNF06-002
+@SCN-RNF06-003
+
+# RNF-08 — public edge with KrakenD Community
+@SCN-RNF08-002
+@SCN-RNF08-003
+@SCN-RNF08-004
+@SCN-RNF08-005
+@SCN-RNF08-008
+@SCN-RNF08-009
+
+# RNF-09 — common aspects of the internal gRPC contract
+@SCN-RNF09-004

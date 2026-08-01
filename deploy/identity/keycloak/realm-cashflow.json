@@ -1,0 +1,237 @@
+{
+  "realm": "cashflow",
+  "displayName": "Cashflow",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "failureFactor": 10,
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "offlineSessionIdleTimeout": 2592000,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "defaultSignatureAlgorithm": "RS256",
+  "attributes": {
+    "frontendUrl": "https://edge.cashflow.local"
+  },
+  "clientScopes": [
+    {
+      "name": "merchant-identity",
+      "description": "Adds the merchant_id claim derived from the authenticated user.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "merchant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "merchant_id",
+            "claim.name": "merchant_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+            "multivalued": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "public-api-audience",
+      "description": "Restricts tokens to the public edge audience.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "public-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "cashflow-public-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "internal-api-audience",
+      "description": "Restricts service tokens to the internal gRPC audience.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "internal-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "cashflow-internal-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ledger:read",
+      "description": "Read own ledger entries.",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "true"}
+    },
+    {
+      "name": "ledger:write",
+      "description": "Create own ledger entries and reversals.",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "true"}
+    },
+    {
+      "name": "consolidation:read",
+      "description": "Read own daily consolidation.",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "true"}
+    },
+    {
+      "name": "ledger:internal:read",
+      "description": "Read the authoritative ledger watermark and entry stream over internal gRPC.",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"}
+    },
+    {
+      "name": "ops:reconcile",
+      "description": "Run reconciliation and dead-letter reprocessing.",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"}
+    }
+  ],
+  "defaultDefaultClientScopes": ["email", "profile", "roles", "web-origins", "acr", "basic"],
+  "clients": [
+    {
+      "clientId": "cashflow-public-api",
+      "name": "Cashflow public API audience",
+      "description": "Audience-only client. It never authenticates and holds no credential.",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "cashflow-internal-api",
+      "name": "Cashflow internal gRPC audience",
+      "description": "Audience-only client for the private gRPC surface. It never authenticates and holds no credential.",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "cashflow-merchant-app",
+      "name": "Cashflow merchant application",
+      "description": "Public browser client. Authorization Code with PKCE only; no direct grant and no client credential.",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": ["https://app.cashflow.local/callback"],
+      "webOrigins": ["https://app.cashflow.local"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://app.cashflow.local/"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email",
+        "merchant-identity",
+        "public-api-audience",
+        "ledger:read",
+        "ledger:write",
+        "consolidation:read"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "cashflow-consolidation-svc",
+      "name": "Consolidation service identity",
+      "description": "Client credentials identity used by the Consolidation API to read the authoritative watermark over internal gRPC.",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "secret": "${CASHFLOW_CONSOLIDATION_CLIENT_SECRET}",
+      "defaultClientScopes": ["basic", "internal-api-audience", "ledger:internal:read"],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "cashflow-reconciliation-svc",
+      "name": "Reconciliation worker identity",
+      "description": "Client credentials identity used by the Reconciliation Worker. Holds the operational scope and the internal read scope only.",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "secret": "${CASHFLOW_RECONCILIATION_CLIENT_SECRET}",
+      "defaultClientScopes": ["basic", "internal-api-audience", "ledger:internal:read", "ops:reconcile"],
+      "optionalClientScopes": []
+    }
+  ],
+  "users": [
+    {
+      "username": "merchant-a",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "merchant-a@cashflow.local",
+      "attributes": {"merchant_id": ["11111111-1111-4111-8111-111111111111"]},
+      "credentials": [{"type": "password", "value": "${CASHFLOW_MERCHANT_A_PASSWORD}", "temporary": false}],
+      "clientRoles": {}
+    },
+    {
+      "username": "merchant-b",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "merchant-b@cashflow.local",
+      "attributes": {"merchant_id": ["22222222-2222-4222-8222-222222222222"]},
+      "credentials": [{"type": "password", "value": "${CASHFLOW_MERCHANT_B_PASSWORD}", "temporary": false}],
+      "clientRoles": {}
+    }
+  ]
+}
