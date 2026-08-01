@@ -1,3 +1,6 @@
 # One @SCN-* tag per line. Only tags in this manifest are executed by Godog.
-# T01 intentionally has no business step implementations, so the manifest is empty.
 # Adding a tag without a real binding makes the strict Godog suite fail.
+@SCN-RNF01-002
+@SCN-RNF01-004
+@SCN-RNF02-002
+@SCN-RNF09-006
