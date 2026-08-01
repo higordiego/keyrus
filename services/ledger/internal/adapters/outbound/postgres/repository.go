@@ -177,11 +177,13 @@ SELECT id::text, merchant_id::text, position, entry_type, amount_minor, currency
        business_date, COALESCE(description, ''), confirmed_at, original_entry_id::text
 FROM ledger.ledger_entry `
 
-const storedEntrySelect = `
+const storedEntryColumns = `
 SELECT entry.id::text, entry.merchant_id::text, entry.position, entry.entry_type,
        entry.amount_minor, entry.currency, entry.business_date,
        COALESCE(entry.description, ''), entry.confirmed_at, entry.original_entry_id::text,
-       reversal.id::text
+       reversal.id::text `
+
+const storedEntrySelect = storedEntryColumns + `
 FROM ledger.ledger_entry entry
 LEFT JOIN ledger.ledger_entry reversal ON reversal.original_entry_id = entry.id `
 
@@ -238,7 +240,11 @@ SELECT COALESCE((SELECT last_position FROM ledger.merchant_position WHERE mercha
 		afterTime = scope.After.ConfirmedAt
 		afterID = scope.After.ID.String()
 	}
-	rows, err := tx.Query(ctx, storedEntrySelect+`
+	rows, err := tx.Query(ctx, storedEntryColumns+`
+FROM ledger.ledger_entry entry
+LEFT JOIN ledger.ledger_entry reversal
+  ON reversal.original_entry_id = entry.id
+ AND reversal.position <= $4
 WHERE entry.merchant_id = $1
   AND ($2::date IS NULL OR entry.business_date >= $2)
   AND ($3::date IS NULL OR entry.business_date <= $3)
@@ -295,10 +301,18 @@ SELECT to_regclass('ledger.merchant_position') IS NOT NULL
    AND to_regclass('ledger.ledger_entry') IS NOT NULL
    AND to_regclass('ledger.idempotency_record') IS NOT NULL
    AND to_regclass('ledger.outbox_event') IS NOT NULL
-   AND has_table_privilege(current_user, 'ledger.merchant_position', 'SELECT,INSERT,UPDATE')
-   AND has_table_privilege(current_user, 'ledger.ledger_entry', 'SELECT,INSERT')
-   AND has_table_privilege(current_user, 'ledger.idempotency_record', 'SELECT,INSERT,UPDATE')
-   AND has_table_privilege(current_user, 'ledger.outbox_event', 'SELECT,INSERT')`).Scan(&ready)
+   AND has_schema_privilege(current_user, 'ledger', 'USAGE')
+   AND has_table_privilege(current_user, 'ledger.merchant_position', 'SELECT')
+   AND has_table_privilege(current_user, 'ledger.merchant_position', 'INSERT')
+   AND has_table_privilege(current_user, 'ledger.merchant_position', 'UPDATE')
+   AND has_table_privilege(current_user, 'ledger.ledger_entry', 'SELECT')
+   AND has_table_privilege(current_user, 'ledger.ledger_entry', 'INSERT')
+   AND has_column_privilege(current_user, 'ledger.ledger_entry', 'id', 'UPDATE')
+   AND has_table_privilege(current_user, 'ledger.idempotency_record', 'SELECT')
+   AND has_table_privilege(current_user, 'ledger.idempotency_record', 'INSERT')
+   AND has_table_privilege(current_user, 'ledger.idempotency_record', 'UPDATE')
+   AND has_table_privilege(current_user, 'ledger.outbox_event', 'SELECT')
+   AND has_table_privilege(current_user, 'ledger.outbox_event', 'INSERT')`).Scan(&ready)
 	if err != nil {
 		return fmt.Errorf("probe ledger schema: %w", err)
 	}

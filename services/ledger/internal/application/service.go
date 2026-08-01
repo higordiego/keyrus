@@ -68,6 +68,7 @@ type CreateEntryInput struct {
 	BusinessDate   *string
 	Description    string
 	TimeZone       string
+	Traceparent    string
 }
 
 type ReverseEntryInput struct {
@@ -75,6 +76,7 @@ type ReverseEntryInput struct {
 	OriginalEntryID string
 	IdempotencyKey  string
 	TimeZone        string
+	Traceparent     string
 }
 
 type EntryResult struct {
@@ -113,26 +115,8 @@ func (s *Service) CreateEntry(ctx context.Context, input CreateEntryInput) (Entr
 	if input.IdempotencyKey == "" {
 		return EntryResult{}, fmt.Errorf("idempotency key: %w", ErrInvalidArgument)
 	}
-	entryType, err := domain.ParseEntryType(input.Type)
-	if err != nil {
-		return EntryResult{}, err
-	}
-	money, err := domain.NewMoney(input.AmountMinor, input.Currency)
-	if err != nil {
-		return EntryResult{}, err
-	}
-	requestedDate, err := optionalDate(input.BusinessDate)
-	if err != nil {
-		return EntryResult{}, err
-	}
-	calendar, err := domain.NewCalendar(input.TimeZone)
-	if err != nil {
-		return EntryResult{}, err
-	}
-	now := s.clock.Now().UTC()
-	businessDate, err := calendar.Resolve(now, requestedDate)
-	if err != nil {
-		return EntryResult{}, err
+	if err := ValidateTraceparent(input.Traceparent); err != nil {
+		return EntryResult{}, fmt.Errorf("traceparent: %w", err)
 	}
 	requestHash, err := hashJSON(struct {
 		Type         string  `json:"type"`
@@ -146,6 +130,27 @@ func (s *Service) CreateEntry(ctx context.Context, input CreateEntryInput) (Entr
 	}
 	return s.executeIdempotent(ctx, merchantID, OperationCreate, input.IdempotencyKey, requestHash,
 		func(tx Transaction) (EntryResult, error) {
+			entryType, err := domain.ParseEntryType(input.Type)
+			if err != nil {
+				return EntryResult{}, err
+			}
+			money, err := domain.NewMoney(input.AmountMinor, input.Currency)
+			if err != nil {
+				return EntryResult{}, err
+			}
+			requestedDate, err := optionalDate(input.BusinessDate)
+			if err != nil {
+				return EntryResult{}, err
+			}
+			calendar, err := domain.NewCalendar(input.TimeZone)
+			if err != nil {
+				return EntryResult{}, err
+			}
+			now := s.clock.Now().UTC()
+			businessDate, err := calendar.Resolve(now, requestedDate)
+			if err != nil {
+				return EntryResult{}, err
+			}
 			position, err := tx.NextPosition(ctx, merchantID, now)
 			if err != nil {
 				return EntryResult{}, err
@@ -164,7 +169,7 @@ func (s *Service) CreateEntry(ctx context.Context, input CreateEntryInput) (Entr
 			if err := tx.InsertEntry(ctx, entry); err != nil {
 				return EntryResult{}, err
 			}
-			if err := s.insertOutbox(ctx, tx, entry, now); err != nil {
+			if err := s.insertOutbox(ctx, tx, entry, now, input.Traceparent); err != nil {
 				return EntryResult{}, err
 			}
 			return resultFromEntry(entry), nil
@@ -183,14 +188,8 @@ func (s *Service) ReverseEntry(ctx context.Context, input ReverseEntryInput) (En
 	if input.IdempotencyKey == "" {
 		return EntryResult{}, fmt.Errorf("idempotency key: %w", ErrInvalidArgument)
 	}
-	calendar, err := domain.NewCalendar(input.TimeZone)
-	if err != nil {
-		return EntryResult{}, err
-	}
-	now := s.clock.Now().UTC()
-	businessDate, err := calendar.Resolve(now, nil)
-	if err != nil {
-		return EntryResult{}, err
+	if err := ValidateTraceparent(input.Traceparent); err != nil {
+		return EntryResult{}, fmt.Errorf("traceparent: %w", err)
 	}
 	requestHash, err := hashJSON(struct {
 		OriginalEntryID string `json:"original_entry_id"`
@@ -200,6 +199,15 @@ func (s *Service) ReverseEntry(ctx context.Context, input ReverseEntryInput) (En
 	}
 	return s.executeIdempotent(ctx, merchantID, OperationReverse, input.IdempotencyKey, requestHash,
 		func(tx Transaction) (EntryResult, error) {
+			calendar, err := domain.NewCalendar(input.TimeZone)
+			if err != nil {
+				return EntryResult{}, err
+			}
+			now := s.clock.Now().UTC()
+			businessDate, err := calendar.Resolve(now, nil)
+			if err != nil {
+				return EntryResult{}, err
+			}
 			original, err := tx.EntryForUpdate(ctx, merchantID, originalID)
 			if err != nil {
 				return EntryResult{}, err
@@ -222,7 +230,7 @@ func (s *Service) ReverseEntry(ctx context.Context, input ReverseEntryInput) (En
 			if err := tx.InsertEntry(ctx, reversal); err != nil {
 				return EntryResult{}, err
 			}
-			if err := s.insertOutbox(ctx, tx, reversal, now); err != nil {
+			if err := s.insertOutbox(ctx, tx, reversal, now, input.Traceparent); err != nil {
 				return EntryResult{}, err
 			}
 			return resultFromEntry(reversal), nil
@@ -359,7 +367,13 @@ func (s *Service) ListEntries(ctx context.Context, input ListEntriesInput) (Entr
 	return page, nil
 }
 
-func (s *Service) insertOutbox(ctx context.Context, tx Transaction, entry domain.Entry, now time.Time) error {
+func (s *Service) insertOutbox(
+	ctx context.Context,
+	tx Transaction,
+	entry domain.Entry,
+	now time.Time,
+	traceparent string,
+) error {
 	eventID, err := s.ids.NewID(now)
 	if err != nil {
 		return err
@@ -377,12 +391,14 @@ func (s *Service) insertOutbox(ctx context.Context, tx Transaction, entry domain
 		BusinessDate     string    `json:"business_date"`
 		ConfirmedAt      time.Time `json:"confirmed_at"`
 		OriginalEntryID  *string   `json:"original_entry_id"`
+		Traceparent      string    `json:"traceparent"`
 	}{
 		EventID: eventID.String(), EventType: entryEventType, OccurredAt: now,
 		MerchantID: entry.MerchantID().String(), MerchantPosition: entry.Position(),
 		EntryID: entry.ID().String(), EntryType: string(entry.Type()), AmountMinor: entry.Money().AmountMinor(),
 		Currency: entry.Money().Currency(), BusinessDate: entry.BusinessDate().String(), ConfirmedAt: entry.ConfirmedAt(),
 		OriginalEntryID: optionalIDString(entry.OriginalEntryID()),
+		Traceparent:     traceparent,
 	})
 	if err != nil {
 		return err

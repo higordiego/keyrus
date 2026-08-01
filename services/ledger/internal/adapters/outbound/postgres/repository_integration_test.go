@@ -1,12 +1,16 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,18 +21,23 @@ import (
 	"github.com/higordiegoti/keyrus/services/ledger/internal/domain"
 	"github.com/higordiegoti/keyrus/services/ledger/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 const (
-	merchantA = "018f0000-0000-7000-8000-000000000101"
-	merchantB = "018f0000-0000-7000-8000-000000000102"
+	merchantA        = "018f0000-0000-7000-8000-000000000101"
+	merchantB        = "018f0000-0000-7000-8000-000000000102"
+	validTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 )
 
 var (
 	testPool      *pgxpool.Pool
+	runtimePool   *pgxpool.Pool
+	readOnlyPool  *pgxpool.Pool
 	testContainer testcontainers.Container
+	testHostPort  string
 )
 
 func TestMain(m *testing.M) {
@@ -68,18 +77,29 @@ func TestMain(m *testing.M) {
 		_ = container.Terminate(context.Background())
 		os.Exit(1)
 	}
-	dsn := fmt.Sprintf("postgres://ledger_test:ledger_test@%s/cashflow?sslmode=disable",
-		net.JoinHostPort(host, port.Port()))
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "parse PostgreSQL DSN: %v\n", err)
-		_ = container.Terminate(context.Background())
-		os.Exit(1)
-	}
-	config.MaxConns = 32
-	testPool, err = pgxpool.NewWithConfig(ctx, config)
+	hostPort := net.JoinHostPort(host, port.Port())
+	testHostPort = hostPort
+	testPool, err = openTestPool(ctx, hostPort, "ledger_test", "ledger_test", "cashflow")
 	if err == nil {
 		err = migrations.Apply(ctx, testPool)
+	}
+	if err == nil {
+		_, err = testPool.Exec(ctx, `
+CREATE ROLE ledger_runtime LOGIN PASSWORD 'ledger_runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+CREATE ROLE ledger_readonly LOGIN PASSWORD 'ledger_readonly' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+GRANT USAGE ON SCHEMA ledger TO ledger_runtime, ledger_readonly;
+GRANT SELECT, INSERT, UPDATE ON ledger.merchant_position TO ledger_runtime;
+GRANT SELECT, INSERT ON ledger.ledger_entry TO ledger_runtime;
+GRANT UPDATE (id) ON ledger.ledger_entry TO ledger_runtime;
+GRANT SELECT, INSERT, UPDATE ON ledger.idempotency_record TO ledger_runtime;
+GRANT SELECT, INSERT ON ledger.outbox_event TO ledger_runtime;
+GRANT SELECT ON ALL TABLES IN SCHEMA ledger TO ledger_readonly;`)
+	}
+	if err == nil {
+		runtimePool, err = openTestPool(ctx, hostPort, "ledger_runtime", "ledger_runtime", "cashflow")
+	}
+	if err == nil {
+		readOnlyPool, err = openTestPool(ctx, hostPort, "ledger_readonly", "ledger_readonly", "cashflow")
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "prepare Ledger schema: %v\n", err)
@@ -90,9 +110,29 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	code := m.Run()
+	readOnlyPool.Close()
+	runtimePool.Close()
 	testPool.Close()
 	_ = testContainer.Terminate(context.Background())
 	os.Exit(code)
+}
+
+func openTestPool(ctx context.Context, hostPort, user, password, database string) (*pgxpool.Pool, error) {
+	dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable", user, password, hostPort, database)
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse PostgreSQL DSN: %w", err)
+	}
+	config.MaxConns = 32
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }
 
 type fixedClock struct {
@@ -143,6 +183,28 @@ func newFixture(t *testing.T) (*application.Service, *postgres.Repository, *fixe
 	return service, repository, clock
 }
 
+func newRuntimeFixture(t *testing.T) (*application.Service, *postgres.Repository, *fixedClock) {
+	t.Helper()
+	resetDatabase(t)
+	repository, err := postgres.New(runtimePool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codec, err := application.NewCursorCodec([]byte("ledger-test-cursor-secret-32bytes!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &fixedClock{now: time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC)}
+	service, err := application.NewService(application.Dependencies{
+		UnitOfWork: repository, Reader: repository, Clock: clock,
+		IDs: &sequenceIDs{}, Cursors: codec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service, repository, clock
+}
+
 func resetDatabase(t *testing.T) {
 	t.Helper()
 	_, err := testPool.Exec(context.Background(), `
@@ -158,6 +220,7 @@ func createInput(merchant, key string, amount int64) application.CreateEntryInpu
 	return application.CreateEntryInput{
 		MerchantID: merchant, IdempotencyKey: key, Type: "credit",
 		AmountMinor: amount, Currency: domain.CurrencyBRL, TimeZone: "America/Fortaleza",
+		Traceparent: validTraceparent,
 	}
 }
 
@@ -218,6 +281,46 @@ FROM ledger.outbox_event WHERE aggregate_id = $1`, created.ID).Scan(&hasDescript
 	}
 }
 
+func TestReadinessAndCommandsUseMinimumNonSuperuserGrants(t *testing.T) {
+	service, repository, _ := newRuntimeFixture(t)
+	ctx := context.Background()
+	if err := repository.Ready(ctx); err != nil {
+		t.Fatalf("minimum runtime role should be ready: %v", err)
+	}
+	readOnlyRepository, err := postgres.New(readOnlyPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := readOnlyRepository.Ready(ctx); err == nil {
+		t.Fatal("read-only role was incorrectly declared ready")
+	}
+	original, err := service.CreateEntry(ctx, createInput(merchantA, "runtime-create", 2_500))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reversal, err := service.ReverseEntry(ctx, application.ReverseEntryInput{
+		MerchantID: merchantA, OriginalEntryID: original.ID, IdempotencyKey: "runtime-reverse",
+		TimeZone: "America/Fortaleza", Traceparent: validTraceparent,
+	})
+	if err != nil {
+		t.Fatalf("minimum runtime role could not lock/reverse: %v", err)
+	}
+	if reversal.OriginalEntryID != original.ID {
+		t.Fatalf("unexpected runtime reversal: %+v", reversal)
+	}
+	if _, err := runtimePool.Exec(ctx,
+		`UPDATE ledger.ledger_entry SET id = id WHERE id = $1`, original.ID,
+	); err == nil {
+		t.Fatal("minimum runtime role bypassed the immutable-entry trigger")
+	}
+	if _, err := runtimePool.Exec(ctx,
+		`DELETE FROM ledger.ledger_entry WHERE id = $1`, original.ID,
+	); err == nil {
+		t.Fatal("minimum runtime role could delete a ledger entry")
+	}
+	assertCounts(t, 2, 2, 2)
+}
+
 func TestIdempotencyKeyIsScopedByOperation(t *testing.T) {
 	service, _, _ := newFixture(t)
 	ctx := context.Background()
@@ -227,7 +330,7 @@ func TestIdempotencyKeyIsScopedByOperation(t *testing.T) {
 	}
 	reversal, err := service.ReverseEntry(ctx, application.ReverseEntryInput{
 		MerchantID: merchantA, OriginalEntryID: original.ID,
-		IdempotencyKey: "shared-key", TimeZone: "America/Fortaleza",
+		IdempotencyKey: "shared-key", TimeZone: "America/Fortaleza", Traceparent: validTraceparent,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -236,6 +339,65 @@ func TestIdempotencyKeyIsScopedByOperation(t *testing.T) {
 		t.Fatalf("same key across operations did not create the expected reversal: %+v", reversal)
 	}
 	assertCounts(t, 2, 2, 2)
+}
+
+func TestCreateAndReversalOutboxPayloadsMatchVersionedSchema(t *testing.T) {
+	service, _, _ := newFixture(t)
+	ctx := context.Background()
+	original, err := service.CreateEntry(ctx, createInput(merchantA, "schema-create", 7_500))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReverseEntry(ctx, application.ReverseEntryInput{
+		MerchantID: merchantA, OriginalEntryID: original.ID, IdempotencyKey: "schema-reverse",
+		TimeZone: "America/Fortaleza", Traceparent: validTraceparent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertOutboxMatchesVersionedSchema(t, 2)
+}
+
+func TestInvalidTraceparentCreatesNoAttemptOrEffect(t *testing.T) {
+	service, _, _ := newFixture(t)
+	input := createInput(merchantA, "invalid-trace", 100)
+	input.Traceparent = "00-00000000000000000000000000000000-0000000000000000-01"
+	if _, err := service.CreateEntry(context.Background(), input); !errors.Is(err, application.ErrInvalidArgument) {
+		t.Fatalf("invalid traceparent should fail, got %v", err)
+	}
+	assertCounts(t, 0, 0, 0)
+}
+
+func TestIdempotentRetryPrecedesTemporalValidationAfterD30BecomesD31(t *testing.T) {
+	service, _, clock := newFixture(t)
+	ctx := context.Background()
+	businessDate := "2026-07-01"
+	input := createInput(merchantA, "lost-response-at-d30", 4_200)
+	input.BusinessDate = &businessDate
+	confirmed, err := service.CreateEntry(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a response lost after commit, then retry after the merchant's day
+	// advances and after a valid time-zone configuration change.
+	clock.Set(time.Date(2026, 8, 1, 15, 0, 0, 0, time.UTC))
+	input.TimeZone = "Europe/Lisbon"
+	replayed, err := service.CreateEntry(ctx, input)
+	if err != nil {
+		t.Fatalf("persisted response was revalidated as D-31: %v", err)
+	}
+	if replayed != confirmed {
+		t.Fatalf("retry did not reproduce the persisted response: confirmed=%+v replayed=%+v", confirmed, replayed)
+	}
+	newAttempt := input
+	newAttempt.IdempotencyKey = "new-attempt-at-d31"
+	if _, err := service.CreateEntry(ctx, newAttempt); !errors.Is(err, domain.ErrInvalidBusinessDate) {
+		t.Fatalf("new D-31 attempt should still fail, got %v", err)
+	}
+	position, err := service.SourcePosition(ctx, merchantA)
+	if err != nil || position != 1 {
+		t.Fatalf("retry changed merchant position: %d, %v", position, err)
+	}
+	assertCounts(t, 1, 1, 1)
 }
 
 func TestConcurrentIdenticalRequestsProduceOneEffect(t *testing.T) {
@@ -300,7 +462,7 @@ func TestConcurrentReversalsCreateOneIntegralCompensation(t *testing.T) {
 			<-start
 			result, err := service.ReverseEntry(ctx, application.ReverseEntryInput{
 				MerchantID: merchantA, OriginalEntryID: original.ID,
-				IdempotencyKey: key, TimeZone: "America/Fortaleza",
+				IdempotencyKey: key, TimeZone: "America/Fortaleza", Traceparent: validTraceparent,
 			})
 			outcomes <- outcome{result: result, err: err}
 		}()
@@ -330,20 +492,20 @@ func TestConcurrentReversalsCreateOneIntegralCompensation(t *testing.T) {
 	}
 	repeated, err := service.ReverseEntry(ctx, application.ReverseEntryInput{
 		MerchantID: merchantA, OriginalEntryID: original.ID,
-		IdempotencyKey: successfulKey(t, success.ID), TimeZone: "America/Fortaleza",
+		IdempotencyKey: successfulKey(t, success.ID), TimeZone: "America/Fortaleza", Traceparent: validTraceparent,
 	})
 	if err != nil || repeated.ID != success.ID {
 		t.Fatalf("idempotent reversal retry failed: %+v, %v", repeated, err)
 	}
 	if _, err := service.ReverseEntry(ctx, application.ReverseEntryInput{
 		MerchantID: merchantA, OriginalEntryID: success.ID,
-		IdempotencyKey: "reverse-a-reversal", TimeZone: "America/Fortaleza",
+		IdempotencyKey: "reverse-a-reversal", TimeZone: "America/Fortaleza", Traceparent: validTraceparent,
 	}); !errors.Is(err, domain.ErrReversalNotAllowed) {
 		t.Fatalf("reversal of a reversal should fail, got %v", err)
 	}
 	if _, err := service.ReverseEntry(ctx, application.ReverseEntryInput{
 		MerchantID: merchantB, OriginalEntryID: original.ID,
-		IdempotencyKey: "cross-tenant-reversal", TimeZone: "America/Fortaleza",
+		IdempotencyKey: "cross-tenant-reversal", TimeZone: "America/Fortaleza", Traceparent: validTraceparent,
 	}); !errors.Is(err, application.ErrEntryNotFound) {
 		t.Fatalf("cross-tenant reversal should look missing, got %v", err)
 	}
@@ -448,6 +610,66 @@ func TestPaginationHighWaterExcludesLaterRetroactiveEntry(t *testing.T) {
 	}
 }
 
+func TestPaginationReversalProjectionIsFixedAtHighWater(t *testing.T) {
+	service, _, clock := newFixture(t)
+	ctx := context.Background()
+	clock.Set(time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC))
+	older, err := service.CreateEntry(ctx, createInput(merchantA, "cut-entry-one", 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Set(time.Date(2026, 7, 31, 15, 1, 0, 0, time.UTC))
+	if _, err := service.CreateEntry(ctx, createInput(merchantA, "cut-entry-two", 200)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.ListEntries(ctx, application.ListEntriesInput{MerchantID: merchantA, Limit: 1})
+	if err != nil || len(first.Entries) != 1 || first.NextCursor == "" {
+		t.Fatalf("establish high-water N: %+v, %v", first, err)
+	}
+	baseline, err := service.ListEntries(ctx, application.ListEntriesInput{
+		MerchantID: merchantA, Limit: 1, Cursor: first.NextCursor,
+	})
+	if err != nil || len(baseline.Entries) != 1 || baseline.Entries[0].ID != older.ID {
+		t.Fatalf("read baseline page at cut N: %+v, %v", baseline, err)
+	}
+	clock.Set(time.Date(2026, 7, 31, 15, 2, 0, 0, time.UTC))
+	reversal, err := service.ReverseEntry(ctx, application.ReverseEntryInput{
+		MerchantID: merchantA, OriginalEntryID: older.ID, IdempotencyKey: "cut-reversal-n-plus-one",
+		TimeZone: "America/Fortaleza", Traceparent: validTraceparent,
+	})
+	if err != nil || reversal.Position != 3 {
+		t.Fatalf("create reversal at N+1: %+v, %v", reversal, err)
+	}
+	afterReversal, err := service.ListEntries(ctx, application.ListEntriesInput{
+		MerchantID: merchantA, Limit: 1, Cursor: first.NextCursor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineJSON, _ := json.Marshal(baseline)
+	afterJSON, _ := json.Marshal(afterReversal)
+	if !bytes.Equal(baselineJSON, afterJSON) {
+		t.Fatalf("page at cut N changed after reversal N+1: before=%s after=%s", baselineJSON, afterJSON)
+	}
+	if afterReversal.Entries[0].State != application.EntryStateConfirmed ||
+		afterReversal.Entries[0].ReversalEntryID != "" {
+		t.Fatalf("cut N leaked reversal N+1: %+v", afterReversal.Entries[0])
+	}
+	fresh, err := service.ListEntries(ctx, application.ListEntriesInput{MerchantID: merchantA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range fresh.Entries {
+		if entry.ID == older.ID {
+			if entry.State != application.EntryStateReversed || entry.ReversalEntryID != reversal.ID {
+				t.Fatalf("fresh traversal did not derive reversal: %+v", entry)
+			}
+			return
+		}
+	}
+	t.Fatal("fresh traversal omitted original entry")
+}
+
 func TestPaginationLimitsOrderingAndInclusivePeriod(t *testing.T) {
 	service, _, clock := newFixture(t)
 	ctx := context.Background()
@@ -516,6 +738,158 @@ func TestLedgerEntryIsImmutableInPostgreSQL(t *testing.T) {
 	stored, err := service.GetEntry(ctx, merchantA, created.ID)
 	if err != nil || stored.AmountMinor != 100 {
 		t.Fatalf("immutable entry changed: %+v, %v", stored, err)
+	}
+}
+
+func TestEntryReferencesAreTenantAware(t *testing.T) {
+	service, _, _ := newFixture(t)
+	ctx := context.Background()
+	entryA, err := service.CreateEntry(ctx, createInput(merchantA, "tenant-fk-a", 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryB, err := service.CreateEntry(ctx, createInput(merchantB, "tenant-fk-b", 200))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO ledger.idempotency_record (
+    attempt_id, merchant_id, operation, key_hash, request_hash,
+    entry_id, response_payload, created_at, completed_at
+) VALUES (
+    '018f0000-0000-7000-8000-000000009901', $1, 'create_entry',
+    decode(repeat('11', 32), 'hex'), decode(repeat('22', 32), 'hex'),
+    $2, '{}'::jsonb, now(), now()
+)`, merchantA, entryB.ID); err == nil {
+		t.Fatal("idempotency accepted an entry owned by another merchant")
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO ledger.outbox_event (
+    event_id, aggregate_id, merchant_id, merchant_position,
+    event_type, payload, occurred_at
+) VALUES (
+    '018f0000-0000-7000-8000-000000009902', $1, $2, $3,
+    'ledger.entry.confirmed.v1', '{}'::jsonb, now()
+)`, entryB.ID, merchantA, entryA.Position); err == nil {
+		t.Fatal("outbox accepted an aggregate owned by another merchant")
+	}
+	assertCounts(t, 2, 2, 2)
+}
+
+func TestMigrationsUpDownUpAndChecksumIntegrity(t *testing.T) {
+	ctx := context.Background()
+	adminPool, err := openTestPool(ctx, testHostPort, "ledger_test", "ledger_test", "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adminPool.Close()
+	const database = "ledger_migration_cycle"
+	if _, err := adminPool.Exec(ctx, "DROP DATABASE IF EXISTS "+database+" WITH (FORCE)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+database); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE IF EXISTS "+database+" WITH (FORCE)")
+	}()
+	cyclePool, err := openTestPool(ctx, testHostPort, "ledger_test", "ledger_test", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cyclePool.Close()
+	if err := migrations.Apply(ctx, cyclePool); err != nil {
+		t.Fatalf("first migration up: %v", err)
+	}
+	var originalChecksum string
+	if err := cyclePool.QueryRow(ctx, `
+SELECT checksum FROM ledger.schema_migration WHERE version = '000001_ledger_core.up.sql'`,
+	).Scan(&originalChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if len(originalChecksum) != 64 {
+		t.Fatalf("migration checksum should be SHA-256, got %q", originalChecksum)
+	}
+	if _, err := cyclePool.Exec(ctx, `
+UPDATE ledger.schema_migration SET checksum = repeat('0', 64)
+WHERE version = '000001_ledger_core.up.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrations.Apply(ctx, cyclePool); err == nil {
+		t.Fatal("migration integrity check accepted a modified checksum")
+	}
+	if _, err := cyclePool.Exec(ctx, `
+UPDATE ledger.schema_migration SET checksum = $1
+WHERE version = '000001_ledger_core.up.sql'`, originalChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrations.RollbackAll(ctx, cyclePool); err != nil {
+		t.Fatalf("destructive migration down: %v", err)
+	}
+	var schemaExists bool
+	if err := cyclePool.QueryRow(ctx,
+		`SELECT to_regnamespace('ledger') IS NOT NULL`,
+	).Scan(&schemaExists); err != nil {
+		t.Fatal(err)
+	}
+	if schemaExists {
+		t.Fatal("destructive down left the ledger schema behind")
+	}
+	if err := migrations.Apply(ctx, cyclePool); err != nil {
+		t.Fatalf("second migration up: %v", err)
+	}
+	var reappliedChecksum string
+	if err := cyclePool.QueryRow(ctx, `
+SELECT checksum FROM ledger.schema_migration WHERE version = '000001_ledger_core.up.sql'`,
+	).Scan(&reappliedChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if reappliedChecksum != originalChecksum {
+		t.Fatalf("up/down/up checksum changed: first=%s second=%s", originalChecksum, reappliedChecksum)
+	}
+}
+
+func assertOutboxMatchesVersionedSchema(t *testing.T, expected int) {
+	t.Helper()
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve integration test path")
+	}
+	schemaPath := filepath.Clean(filepath.Join(
+		filepath.Dir(currentFile), "../../../../../../api/events/ledger.entry.confirmed.v1.schema.json",
+	))
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+	schema, err := compiler.Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile event schema: %v", err)
+	}
+	rows, err := testPool.Query(context.Background(), `
+SELECT payload FROM ledger.outbox_event ORDER BY merchant_position`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(payload))
+		if err != nil {
+			t.Fatalf("decode outbox payload: %v", err)
+		}
+		if err := schema.Validate(instance); err != nil {
+			t.Fatalf("outbox payload %s violates event v1 schema: %v", payload, err)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count != expected {
+		t.Fatalf("expected %d outbox payloads, validated %d", expected, count)
 	}
 }
 

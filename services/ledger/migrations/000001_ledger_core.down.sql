@@ -5,3 +5,4 @@ DROP FUNCTION IF EXISTS ledger.reject_ledger_entry_mutation();
 DROP TABLE IF EXISTS ledger.ledger_entry;
 DROP TABLE IF EXISTS ledger.merchant_position;
 DROP TABLE IF EXISTS ledger.schema_migration;
+DROP SCHEMA IF EXISTS ledger;
