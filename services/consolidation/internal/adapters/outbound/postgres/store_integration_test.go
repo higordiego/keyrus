@@ -6,108 +6,57 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"net"
 	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/higordiegoti/keyrus/internal/postgrestest"
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/application"
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/domain"
 )
 
 var (
-	integrationPool *pgxpool.Pool
-	integrationSkip string
+	integrationPool     *pgxpool.Pool
+	integrationDatabase *postgrestest.Instance
 )
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	dsn := os.Getenv("TEST_POSTGRES_DSN")
-	containerName := ""
-	cleanupContainer := func() {
-		if containerName != "" {
-			_ = exec.Command("docker", "rm", "--force", containerName).Run()
-		}
-	}
-	if dsn == "" {
-		if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
-			integrationSkip = "Docker unavailable and TEST_POSTGRES_DSN is not set"
-			os.Exit(m.Run())
-		}
-		containerName = "keyrus-consolidation-test-" + strconv.Itoa(os.Getpid())
-		output, err := exec.CommandContext(ctx, "docker", "run", "--detach", "--rm",
-			"--name", containerName,
-			"--env", "POSTGRES_PASSWORD=postgres",
-			"--env", "POSTGRES_DB=cashflow",
-			"--publish", "127.0.0.1::5432",
-			"postgres:18-alpine").CombinedOutput()
-		if err != nil {
-			integrationSkip = fmt.Sprintf("start PostgreSQL container: %v (%s)", err, strings.TrimSpace(string(output)))
-			os.Exit(m.Run())
-		}
-		portOutput, err := exec.CommandContext(ctx, "docker", "port", containerName, "5432/tcp").Output()
-		if err != nil {
-			integrationSkip = "resolve PostgreSQL container port: " + err.Error()
-			cleanupContainer()
-			os.Exit(m.Run())
-		}
-		_, port, err := net.SplitHostPort(strings.TrimSpace(string(portOutput)))
-		if err != nil {
-			integrationSkip = "parse PostgreSQL container port: " + err.Error()
-			cleanupContainer()
-			os.Exit(m.Run())
-		}
-		dsn = "postgres://postgres:postgres@127.0.0.1:" + port + "/cashflow?sslmode=disable"
-	}
-
 	var err error
-	deadline := time.Now().Add(45 * time.Second)
-	for time.Now().Before(deadline) {
-		integrationPool, err = pgxpool.New(ctx, dsn)
-		if err == nil {
-			err = integrationPool.Ping(ctx)
-		}
-		if err == nil {
-			break
-		}
-		if integrationPool != nil {
-			integrationPool.Close()
-			integrationPool = nil
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	integrationDatabase, err = postgrestest.Start(ctx, "consolidation")
 	if err != nil {
-		integrationSkip = "connect to PostgreSQL: " + err.Error()
-		code := m.Run()
-		cleanupContainer()
-		os.Exit(code)
-	}
-	if err = ApplyMigrations(ctx, integrationPool); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		integrationPool.Close()
-		cleanupContainer()
 		os.Exit(1)
 	}
+	integrationPool = integrationDatabase.Pool
+	if err = ApplyMigrations(ctx, integrationPool); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		integrationDatabase.Close()
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "PostgreSQL integration ready: %s\n", postgrestest.Image)
 	code := m.Run()
-	integrationPool.Close()
-	cleanupContainer()
+	integrationDatabase.Close()
 	os.Exit(code)
 }
 
 func requirePostgres(t *testing.T) (*Store, *application.Projector) {
 	t.Helper()
-	if integrationSkip != "" {
-		t.Skip(integrationSkip)
-	}
 	ctx := context.Background()
+	if _, err := integrationPool.Exec(ctx, `
+		DROP TRIGGER IF EXISTS reject_test_recompute_advance
+		ON consolidation.recompute_job`); err != nil {
+		t.Fatalf("remove recompute rollback trigger: %v", err)
+	}
+	if _, err := integrationPool.Exec(ctx, `
+		DROP FUNCTION IF EXISTS consolidation.reject_test_recompute_advance()`); err != nil {
+		t.Fatalf("remove recompute rollback function: %v", err)
+	}
 	_, err := integrationPool.Exec(ctx, `
 		TRUNCATE consolidation.recompute_job,
 			consolidation.position_receipt,
@@ -132,9 +81,6 @@ func requirePostgres(t *testing.T) (*Store, *application.Projector) {
 }
 
 func TestApplyMigrationsIsConcurrentAndIdempotent(t *testing.T) {
-	if integrationSkip != "" {
-		t.Skip(integrationSkip)
-	}
 	const workers = 4
 	start := make(chan struct{})
 	errorsSeen := make(chan error, workers)
@@ -354,15 +300,6 @@ func TestRecomputeJobsAreBoundedToThirtyOneCalendarDays(t *testing.T) {
 	if _, err := projector.Apply(ctx, boundary); err != nil {
 		t.Fatal(err)
 	}
-	var oversized int
-	if err := integrationPool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM consolidation.recompute_job
-		WHERE through_date - from_date > 30`).Scan(&oversized); err != nil {
-		t.Fatal(err)
-	}
-	if oversized != 0 {
-		t.Fatalf("found %d recompute jobs exceeding 31 inclusive days", oversized)
-	}
 	var jobs int
 	if err := integrationPool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM consolidation.recompute_job
@@ -371,7 +308,7 @@ func TestRecomputeJobsAreBoundedToThirtyOneCalendarDays(t *testing.T) {
 		t.Fatal(err)
 	}
 	if jobs != 1 {
-		t.Fatalf("D-30 event did not produce one completed 31-day recompute: jobs=%d", jobs)
+		t.Fatalf("D-30 event did not produce one completed continuation: jobs=%d", jobs)
 	}
 	from, _ := time.Parse(domain.DateLayout, "2026-07-01")
 	through, _ := time.Parse(domain.DateLayout, "2026-07-31")
@@ -398,19 +335,120 @@ func TestRecomputeJobsAreBoundedToThirtyOneCalendarDays(t *testing.T) {
 	delayed := fixtureEvent(delayedMerchant, 1, domain.EntryCredit, 100, "2026-04-01", nil)
 	delayed.OccurredAt = time.Date(2026, 4, 1, 15, 0, 0, 0, time.UTC)
 	delayed.ConfirmedAt = delayed.OccurredAt
-	if _, err := projector.Apply(ctx, delayed); err != nil {
+	initial, err := projector.Apply(ctx, delayed)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var chunks int
+	assertBlock(t, initial.RecomputedFrom, initial.RecomputedThrough, "2026-04-01", "2026-05-01")
+	if !initial.RecomputePending {
+		t.Fatal("long recompute was falsely completed in Apply")
+	}
+	var nextDate time.Time
+	var attempts int
 	if err := integrationPool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM consolidation.recompute_job
-		WHERE event_id = $1 AND status = 'completed'`, delayed.EventID).Scan(&chunks); err != nil {
+		SELECT next_date, attempts FROM consolidation.recompute_job
+		WHERE event_id = $1 AND status = 'pending'`, delayed.EventID).Scan(&nextDate, &attempts); err != nil {
 		t.Fatal(err)
 	}
-	if chunks != 4 {
-		t.Fatalf("delayed event recompute chunks = %d, want 4 bounded chunks", chunks)
+	if nextDate.Format(domain.DateLayout) != "2026-05-02" || attempts != 1 {
+		t.Fatalf("durable continuation = %s attempts=%d", nextDate.Format(domain.DateLayout), attempts)
+	}
+
+	duplicate, err := projector.Apply(ctx, delayed)
+	if err != nil || !duplicate.Duplicate || !duplicate.RecomputePending {
+		t.Fatalf("redelivery did not preserve pending continuation: result=%+v err=%v", duplicate, err)
+	}
+	if err := integrationPool.QueryRow(ctx, `
+		SELECT next_date FROM consolidation.recompute_job WHERE event_id = $1`, delayed.EventID).Scan(&nextDate); err != nil {
+		t.Fatal(err)
+	}
+	if nextDate.Format(domain.DateLayout) != "2026-05-02" {
+		t.Fatalf("redelivery advanced continuation to %s", nextDate.Format(domain.DateLayout))
+	}
+
+	// Inject a failure after the block writes but before continuation advance.
+	// PostgreSQL must roll back both the calendar block and its cursor.
+	if _, err := integrationPool.Exec(ctx, fmt.Sprintf(`
+		CREATE FUNCTION consolidation.reject_test_recompute_advance() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'injected recompute continuation failure'; END;
+		$$;
+		CREATE TRIGGER reject_test_recompute_advance
+		BEFORE UPDATE ON consolidation.recompute_job
+		FOR EACH ROW WHEN (OLD.merchant_id = '%s'::uuid)
+		EXECUTE FUNCTION consolidation.reject_test_recompute_advance();`, delayedMerchant)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projector.ResumeRecompute(ctx, delayedMerchant); err == nil || application.ClassifyFailure(err) != application.FailureRetry {
+		t.Fatalf("injected continuation failure should be retryable, got %v", err)
+	}
+	if _, err := integrationPool.Exec(ctx, `
+		DROP TRIGGER reject_test_recompute_advance ON consolidation.recompute_job;
+		DROP FUNCTION consolidation.reject_test_recompute_advance();`); err != nil {
+		t.Fatal(err)
+	}
+	if err := integrationPool.QueryRow(ctx, `
+		SELECT next_date FROM consolidation.recompute_job WHERE event_id = $1`, delayed.EventID).Scan(&nextDate); err != nil {
+		t.Fatal(err)
+	}
+	if nextDate.Format(domain.DateLayout) != "2026-05-02" {
+		t.Fatalf("failed block advanced continuation to %s", nextDate.Format(domain.DateLayout))
+	}
+	var rolledBackDay bool
+	if err := integrationPool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM consolidation.daily_balance
+			WHERE merchant_id = $1 AND business_date = '2026-05-02'
+		)`, delayedMerchant).Scan(&rolledBackDay); err != nil {
+		t.Fatal(err)
+	}
+	if rolledBackDay {
+		t.Fatal("failed continuation left a partially materialized calendar block")
+	}
+
+	// A separate merchant commits while A remains durably pending and unlocked.
+	independentMerchant := "72000000-0000-4000-8000-000000000007"
+	if _, err := projector.Apply(ctx, fixtureEvent(independentMerchant, 1, domain.EntryCredit, 700, "2026-07-31", nil)); err != nil {
+		t.Fatalf("independent merchant between recompute blocks: %v", err)
+	}
+	assertBalance(t, store, independentMerchant, "2026-07-31", 700, 0, 700, 1, 700)
+
+	blocks := [][2]string{{"2026-05-02", "2026-06-01"}, {"2026-06-02", "2026-07-02"}, {"2026-07-03", "2026-07-31"}}
+	for index, expected := range blocks {
+		result, err := projector.ResumeRecompute(ctx, delayedMerchant)
+		if err != nil {
+			t.Fatalf("resume block %d: %v", index+2, err)
+		}
+		assertBlock(t, result.From, result.Through, expected[0], expected[1])
+		if result.Pending != (index < len(blocks)-1) {
+			t.Fatalf("block %d pending=%v", index+2, result.Pending)
+		}
+	}
+	noOp, err := projector.ResumeRecompute(ctx, delayedMerchant)
+	if err != nil || noOp.Processed {
+		t.Fatalf("completed continuation was not idempotent: result=%+v err=%v", noOp, err)
+	}
+	var pending bool
+	if err := integrationPool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM consolidation.recompute_job
+			WHERE event_id = $1 AND status = 'pending'
+		)`, delayed.EventID).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("completed continuation remains pending")
 	}
 	assertBalance(t, store, delayedMerchant, "2026-07-31", 100, 0, 100, 1, 200)
+}
+
+func assertBlock(t *testing.T, from, through time.Time, expectedFrom, expectedThrough string) {
+	t.Helper()
+	if from.Format(domain.DateLayout) != expectedFrom || through.Format(domain.DateLayout) != expectedThrough {
+		t.Fatalf("block = %s..%s, want %s..%s", from.Format(domain.DateLayout), through.Format(domain.DateLayout), expectedFrom, expectedThrough)
+	}
+	if through.Sub(from) > 30*24*time.Hour {
+		t.Fatalf("block exceeds 31 inclusive days: %s..%s", from, through)
+	}
 }
 
 func TestConcurrentRedeliveryProducesOneFinancialEffect(t *testing.T) {

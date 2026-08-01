@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -103,16 +104,18 @@ func (s *Store) Apply(ctx context.Context, event domain.EntryConfirmed) (result 
 		return result, fmt.Errorf("find recompute range: %w", err)
 	}
 
-	// A row per calendar day makes the carry-forward balance explicit and lets
-	// the query side distinguish a known zero-movement day from no snapshot.
-	if _, err = tx.Exec(ctx, `
-		INSERT INTO consolidation.daily_balance (merchant_id, business_date)
-		SELECT $1, day::date
-		FROM generate_series($2::date, $3::date, interval '1 day') AS day
-		ON CONFLICT (merchant_id, business_date) DO NOTHING`, event.MerchantID, from, through); err != nil {
-		return result, classifyPersistenceError("materialize projection calendar", err)
+	var jobID int64
+	if err = tx.QueryRow(ctx, `
+		INSERT INTO consolidation.recompute_job (
+			event_id, merchant_id, from_date, through_date, next_date, status
+		) VALUES ($1, $2, $3, $4, $3, 'pending')
+		RETURNING id`, event.EventID, event.MerchantID, from, through).Scan(&jobID); err != nil {
+		return result, classifyPersistenceError("create recompute continuation", err)
 	}
-	if err = recomputeClosings(ctx, tx, event, from, through); err != nil {
+	recompute, err := processRecomputeBlock(ctx, tx, recomputeJob{
+		ID: jobID, MerchantID: event.MerchantID, From: from, Through: through, Next: from,
+	}, false)
+	if err != nil {
 		return result, err
 	}
 
@@ -120,13 +123,25 @@ func (s *Store) Apply(ctx context.Context, event domain.EntryConfirmed) (result 
 	if err != nil {
 		return application.ProjectionResult{}, err
 	}
-	result.RecomputedFrom = event.BusinessDate
-	result.RecomputedThrough = through
+	result.RecomputedFrom = recompute.From
+	result.RecomputedThrough = recompute.Through
+	result.RecomputePending, err = readPendingRecompute(ctx, tx, event.MerchantID)
+	if err != nil {
+		return application.ProjectionResult{}, err
+	}
 
 	if err = tx.Commit(ctx); err != nil {
 		return application.ProjectionResult{}, fmt.Errorf("commit projection: %w", err)
 	}
 	return result, nil
+}
+
+type recomputeJob struct {
+	ID         int64
+	MerchantID string
+	From       time.Time
+	Through    time.Time
+	Next       time.Time
 }
 
 func insertInbox(ctx context.Context, tx pgx.Tx, event domain.EntryConfirmed) (bool, error) {
@@ -167,28 +182,30 @@ func resolveDuplicate(ctx context.Context, tx pgx.Tx, event domain.EntryConfirme
 	if err != nil {
 		return application.ProjectionResult{}, err
 	}
+	pending, err := readPendingRecompute(ctx, tx, event.MerchantID)
+	if err != nil {
+		return application.ProjectionResult{}, err
+	}
 	return application.ProjectionResult{
 		Duplicate: true, SourcePosition: progress.SourcePosition,
 		AppliedPosition: progress.AppliedPosition, FirstGap: progress.FirstGap,
+		RecomputePending: pending,
 	}, nil
 }
 
-func recomputeClosings(ctx context.Context, tx pgx.Tx, event domain.EntryConfirmed, from, through time.Time) error {
-	for chunkFrom := from; !chunkFrom.After(through); chunkFrom = chunkFrom.AddDate(0, 0, maxRecomputeSpanDays) {
-		chunkThrough := chunkFrom.AddDate(0, 0, maxRecomputeSpanDays-1)
-		if chunkThrough.After(through) {
-			chunkThrough = through
-		}
-		var jobID int64
-		if err := tx.QueryRow(ctx, `
-		INSERT INTO consolidation.recompute_job (
-			event_id, merchant_id, from_date, through_date, status
-		) VALUES ($1, $2, $3, $4, 'running')
-		RETURNING id`, event.EventID, event.MerchantID, chunkFrom, chunkThrough).Scan(&jobID); err != nil {
-			return classifyPersistenceError("start recompute job", err)
-		}
-
-		if _, err := tx.Exec(ctx, `
+func processRecomputeBlock(ctx context.Context, tx pgx.Tx, job recomputeJob, incrementAttempts bool) (application.RecomputeResult, error) {
+	blockThrough := job.Next.AddDate(0, 0, maxRecomputeSpanDays-1)
+	if blockThrough.After(job.Through) {
+		blockThrough = job.Through
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO consolidation.daily_balance (merchant_id, business_date)
+		SELECT $1, day::date
+		FROM generate_series($2::date, $3::date, interval '1 day') AS day
+		ON CONFLICT (merchant_id, business_date) DO NOTHING`, job.MerchantID, job.Next, blockThrough); err != nil {
+		return application.RecomputeResult{}, classifyPersistenceError("materialize projection calendar block", err)
+	}
+	if _, err := tx.Exec(ctx, `
 			WITH baseline AS (
 				SELECT COALESCE((
 					SELECT closing_balance_minor
@@ -212,18 +229,90 @@ func recomputeClosings(ctx context.Context, tx pgx.Tx, event domain.EntryConfirm
 			FROM running
 			WHERE balance.merchant_id = $1
 				AND balance.business_date = running.business_date
-				AND balance.closing_balance_minor IS DISTINCT FROM running.closing`, event.MerchantID, chunkFrom, chunkThrough); err != nil {
-			return classifyPersistenceError("recompute closing balances", err)
-		}
-
-		if _, err := tx.Exec(ctx, `
-		UPDATE consolidation.recompute_job
-		SET status = 'completed', completed_at = clock_timestamp()
-		WHERE id = $1`, jobID); err != nil {
-			return fmt.Errorf("complete recompute job: %w", err)
-		}
+				AND balance.closing_balance_minor IS DISTINCT FROM running.closing`, job.MerchantID, job.Next, blockThrough); err != nil {
+		return application.RecomputeResult{}, classifyPersistenceError("recompute closing balance block", err)
 	}
-	return nil
+
+	pending := blockThrough.Before(job.Through)
+	var nextDate any
+	status := "completed"
+	if pending {
+		nextDate = blockThrough.AddDate(0, 0, 1)
+		status = "pending"
+	}
+	attemptIncrement := 0
+	if incrementAttempts {
+		attemptIncrement = 1
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE consolidation.recompute_job
+		SET status = $2, next_date = $3,
+			completed_at = CASE WHEN $2 = 'completed' THEN clock_timestamp() ELSE NULL END,
+			attempts = attempts + $4
+		WHERE id = $1`, job.ID, status, nextDate, attemptIncrement); err != nil {
+		return application.RecomputeResult{}, classifyPersistenceError("advance recompute continuation", err)
+	}
+	return application.RecomputeResult{
+		Processed: true, JobID: job.ID, MerchantID: job.MerchantID,
+		From: job.Next, Through: blockThrough, Pending: pending,
+	}, nil
+}
+
+func (s *Store) ResumeNext(ctx context.Context, merchantID string) (result application.RecomputeResult, err error) {
+	merchantID = strings.ToLower(merchantID)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return result, fmt.Errorf("begin recompute continuation: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(context.WithoutCancel(ctx))
+		}
+	}()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, merchantID); err != nil {
+		return result, fmt.Errorf("lock merchant recompute continuation: %w", err)
+	}
+	var job recomputeJob
+	err = tx.QueryRow(ctx, `
+		SELECT id, merchant_id::text, from_date, through_date, next_date
+		FROM consolidation.recompute_job
+		WHERE merchant_id = $1 AND status = 'pending'
+		ORDER BY next_date, id
+		LIMIT 1
+		FOR UPDATE`, merchantID).Scan(&job.ID, &job.MerchantID, &job.From, &job.Through, &job.Next)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err = tx.Commit(ctx); err != nil {
+			return result, fmt.Errorf("commit empty recompute continuation: %w", err)
+		}
+		return application.RecomputeResult{}, nil
+	}
+	if err != nil {
+		return result, fmt.Errorf("select recompute continuation: %w", err)
+	}
+	result, err = processRecomputeBlock(ctx, tx, job, true)
+	if err != nil {
+		return application.RecomputeResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return application.RecomputeResult{}, fmt.Errorf("commit recompute continuation: %w", err)
+	}
+	return result, nil
+}
+
+func readPendingRecompute(ctx context.Context, query rowQuerier, merchantID string) (bool, error) {
+	var pending bool
+	if err := query.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM consolidation.recompute_job
+			WHERE merchant_id = $1 AND status IN ('pending', 'running')
+		)`, merchantID).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read recompute pending state: %w", err)
+	}
+	return pending, nil
+}
+
+func (s *Store) HasPendingRecompute(ctx context.Context, merchantID string) (bool, error) {
+	return readPendingRecompute(ctx, s.pool, merchantID)
 }
 
 func advanceProgress(ctx context.Context, tx pgx.Tx, event domain.EntryConfirmed) (application.ProjectionResult, error) {

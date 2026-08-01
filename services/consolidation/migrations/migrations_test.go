@@ -20,3 +20,16 @@ func TestProjectionMigrationIsEmbeddedAndSchemaQualified(t *testing.T) {
 		}
 	}
 }
+
+func TestRecomputeContinuationMigrationIsEmbedded(t *testing.T) {
+	contents, err := FS.ReadFile("000002_recompute_continuation.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(contents)
+	for _, required := range []string{"next_date", "recompute_job_continuation_check", "status = 'pending'"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("continuation migration does not contain %q", required)
+		}
+	}
+}
