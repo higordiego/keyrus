@@ -19,11 +19,10 @@ const (
 	TraceStateHeader  = "tracestate"
 )
 
-// Limits from the W3C Trace Context recommendation.
-const (
-	maxTraceStateEntries = 32
-	maxTraceStateBytes   = 512
-)
+// PublicTraceState is the sole value accepted from the public edge. An opaque
+// vendor value cannot be safely inspected for credentials or financial data,
+// so public callers may only select this fixed, data-free marker.
+const PublicTraceState = "cashflow=public-edge"
 
 // ErrInvalidTraceParent means the value did not satisfy the version 00 format.
 var ErrInvalidTraceParent = errors.New("tracecontext: traceparent is invalid")
@@ -146,33 +145,14 @@ func NewSpanContext() (SpanContext, error) {
 	}, nil
 }
 
-// SanitizeTraceState drops entries beyond the recommended limits and any entry
-// that is not a well formed key/value pair. An unparseable tracestate yields an
-// empty string rather than being forwarded verbatim.
+// SanitizeTraceState applies a strict whole-value allowlist. This deliberately
+// rejects otherwise valid W3C vendor state because it is caller-controlled and
+// could act as an exfiltration channel into logs or OTLP exports.
 func SanitizeTraceState(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return ""
+	if strings.TrimSpace(value) == PublicTraceState {
+		return PublicTraceState
 	}
-	var kept []string
-	for _, entry := range strings.Split(value, ",") {
-		trimmed := strings.TrimSpace(entry)
-		if trimmed == "" {
-			continue
-		}
-		key, val, found := strings.Cut(trimmed, "=")
-		if !found || key == "" || val == "" || strings.ContainsAny(trimmed, " \t") {
-			return ""
-		}
-		kept = append(kept, trimmed)
-		if len(kept) == maxTraceStateEntries {
-			break
-		}
-	}
-	result := strings.Join(kept, ",")
-	if len(result) > maxTraceStateBytes {
-		return ""
-	}
-	return result
+	return ""
 }
 
 // EnsureTraceParent returns the incoming traceparent when it is valid and a

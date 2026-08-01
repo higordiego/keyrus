@@ -13,5 +13,7 @@ COPY --from=plugin-builder /out/cashflow-no-redirect.so /etc/krakend/plugins/cas
 COPY deploy/edge/krakend/krakend.json /etc/krakend/krakend.json
 
 USER 65532:65532
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=6 \
+    CMD ["/usr/bin/wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/__health"]
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["krakend", "run", "-c", "/etc/krakend/krakend.json"]

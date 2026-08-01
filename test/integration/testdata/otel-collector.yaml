@@ -17,6 +17,10 @@ processors:
         action: delete
       - key: http.request.header.idempotency-key
         action: delete
+  transform/drop-tracestate:
+    error_mode: propagate
+    trace_statements:
+      - set(span.trace_state, "")
   batch:
     timeout: 100ms
 
@@ -31,5 +35,5 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [attributes/sanitize, batch]
+      processors: [attributes/sanitize, transform/drop-tracestate, batch]
       exporters: [debug]
