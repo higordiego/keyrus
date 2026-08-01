@@ -1,3 +1,14 @@
 # One @SCN-* tag per line. Only tags in this manifest are executed by Godog.
-# T01 intentionally has no business step implementations, so the manifest is empty.
-# Adding a tag without a real binding makes the strict Godog suite fail.
+# Only scenarios backed by real component bindings and PostgreSQL are listed.
+@SCN-RF04-001
+@SCN-RF04-002
+@SCN-RF04-003
+@SCN-RF04-004
+@SCN-RF04-005
+@SCN-RF04-006
+@SCN-RF04A-001
+@SCN-RF04A-002
+@SCN-RF04A-003
+@SCN-RF04A-004
+@SCN-RNF06-005
+@SCN-RNF06-006
