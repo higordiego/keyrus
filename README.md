@@ -4,7 +4,7 @@ Fundação Go orientada a contratos para Ledger e Consolidado Diário. Este tick
 
 ## Bootstrap e gates
 
-Pré-requisito: Go 1.26.4. `buf`, `protoc-gen-go`, `protoc-gen-go-grpc` e os plugins do grpc-gateway são baixados em versões fixas para `.tools/bin`; não é necessária instalação global de `buf` ou `protoc`.
+Pré-requisito: Go 1.26.5. `buf`, `protoc-gen-go`, `protoc-gen-go-grpc` e os plugins do grpc-gateway são baixados em versões fixas para `.tools/bin`; não é necessária instalação global de `buf` ou `protoc`.
 
 ```sh
 make bootstrap
@@ -13,6 +13,8 @@ make reports
 ```
 
 `make ci` valida geração determinística, formatação, Buf lint, breaking changes contra o descriptor baseline, `go vet`, build, `go test -race`, parsing Gherkin, as 81 tags únicas e o manifesto de cenários implementados.
+
+Para a fundação DevSecOps, use `make policy`, `make security`, `make build-validation` ou `make full-validation`. Integração será materializada somente com a primeira fronteira real de datastore, broker ou container; o catálogo/contrato já coberto por CI não é apresentado como um gate adicional. As ferramentas pinadas são instaladas em `.tools/` sem pressupor scanners globais. Consulte [docs/devsecops.md](docs/devsecops.md) para workflows, evidências, limitações de recursos GitHub e o procedimento adiado de proteção da `main`; reportes e exceções seguem [SECURITY.md](SECURITY.md).
 
 ## Fronteiras de protocolo
 
