@@ -7,7 +7,7 @@
   "cache_ttl": "0s",
   "read_header_timeout": "2s",
   "read_timeout": "5s",
-  "write_timeout": "5s",
+  "write_timeout": "20s",
   "idle_timeout": "30s",
   "max_header_bytes": 16384,
   "output_encoding": "no-op",

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func ParseAssignments(raw string) (map[string][]string, error) {
@@ -47,6 +48,17 @@ func ParseUint64(raw string, fallback uint64) (uint64, error) {
 	value, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("identityruntime: parse uint64: %w", err)
+	}
+	return value, nil
+}
+
+func ParseDuration(raw string, fallback time.Duration) (time.Duration, error) {
+	if strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("identityruntime: duration must be positive: %q", raw)
 	}
 	return value, nil
 }

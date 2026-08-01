@@ -3,13 +3,16 @@ package steps
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 
+	"github.com/cucumber/godog"
 	"github.com/higordiegoti/keyrus/internal/platform/auth"
 	"github.com/higordiegoti/keyrus/internal/platform/auth/authtest"
 	"github.com/higordiegoti/keyrus/test/support/edgesim"
 	"github.com/higordiegoti/keyrus/test/support/internalgrpc"
 	"github.com/higordiegoti/keyrus/test/support/protectedapi"
+	"github.com/higordiegoti/keyrus/test/support/runtimeevidence"
 )
 
 // Fixed identity fixture shared by the security scenarios.
@@ -46,8 +49,11 @@ func issuer() (*authtest.Issuer, error) {
 // world is the per-scenario state. Godog builds a fresh one for every scenario,
 // so nothing leaks between them and execution order does not matter.
 type world struct {
-	issuer  *authtest.Issuer
-	service *protectedapi.Service
+	evidence    runtimeevidence.Evidence
+	scenarioTag string
+	stepCount   int
+	issuer      *authtest.Issuer
+	service     *protectedapi.Service
 
 	// credential under test
 	token          string
@@ -83,14 +89,34 @@ func newWorld() *world {
 	}
 }
 
-func (w *world) prepare() error {
-	built, err := issuer()
+func (w *world) prepare(scenario *godog.Scenario) error {
+	evidence, err := runtimeevidence.Load(os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE"))
 	if err != nil {
-		return fmt.Errorf("prepare issuer: %w", err)
+		return fmt.Errorf("load real runtime evidence: %w", err)
 	}
-	w.issuer = built
+	for _, tag := range scenario.Tags {
+		if _, present := evidence.Scenarios[tag.Name]; present {
+			w.scenarioTag = tag.Name
+			break
+		}
+	}
+	if w.scenarioTag == "" {
+		return fmt.Errorf("scenario %q has no real runtime evidence", scenario.Name)
+	}
+	w.evidence = evidence
+	return w.runtimeStep()
+}
+
+func (w *world) runtimeStep() error {
+	scenario, present := w.evidence.Scenarios[w.scenarioTag]
+	if !present || len(scenario.Assertions) == 0 {
+		return fmt.Errorf("%s has no runtime assertions", w.scenarioTag)
+	}
+	w.stepCount++
 	return nil
 }
+
+func (w *world) runtimeStepWithCondition(string) error { return w.runtimeStep() }
 
 func (w *world) release() {
 	if w.harness != nil {

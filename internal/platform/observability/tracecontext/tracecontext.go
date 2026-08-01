@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // Header names carried across HTTP and gRPC metadata.
@@ -57,6 +59,40 @@ func FromContext(ctx context.Context) (SpanContext, string, bool) {
 		return SpanContext{}, "", false
 	}
 	return value.span, value.state, true
+}
+
+// WithRemoteParent bridges a validated transport carrier into the OTel SDK.
+func WithRemoteParent(ctx context.Context, span SpanContext, state string) context.Context {
+	traceID, traceErr := oteltrace.TraceIDFromHex(span.TraceID)
+	spanID, spanErr := oteltrace.SpanIDFromHex(span.SpanID)
+	traceState, stateErr := oteltrace.ParseTraceState(SanitizeTraceState(state))
+	if traceErr != nil || spanErr != nil || stateErr != nil {
+		return ctx
+	}
+	flags := oteltrace.TraceFlags(0)
+	if span.Sampled() {
+		flags = oteltrace.FlagsSampled
+	}
+	remote := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+		TraceID: traceID, SpanID: spanID, TraceFlags: flags, TraceState: traceState, Remote: true,
+	})
+	return oteltrace.ContextWithRemoteSpanContext(ctx, remote)
+}
+
+// WithCurrentSpan copies the active OTel span into the transport-neutral
+// carrier used by the HTTP and gRPC security layers.
+func WithCurrentSpan(ctx context.Context, state string) context.Context {
+	span := oteltrace.SpanContextFromContext(ctx)
+	if !span.IsValid() {
+		return ctx
+	}
+	flags := "00"
+	if span.IsSampled() {
+		flags = "01"
+	}
+	return WithCarrier(ctx, SpanContext{
+		TraceID: span.TraceID().String(), SpanID: span.SpanID().String(), Flags: flags,
+	}, state)
 }
 
 // String renders the version 00 traceparent form.

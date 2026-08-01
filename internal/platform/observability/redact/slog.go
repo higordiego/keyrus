@@ -79,7 +79,8 @@ func sanitizeAny(value any, depth int) any {
 		return Placeholder
 	}
 	if err, ok := value.(error); ok {
-		return String(err.Error())
+		_ = err
+		return Placeholder
 	}
 	if valuer, ok := value.(slog.LogValuer); ok {
 		return sanitizeSlogValue(valuer.LogValue().Resolve(), depth+1)

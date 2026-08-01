@@ -3,6 +3,7 @@ SHELL := /bin/sh
 GO_VERSION := 1.26.4
 TOOLS_BIN := $(CURDIR)/.tools/bin
 TOOLS_VERSIONS := $(CURDIR)/.tools/versions
+RUNTIME_EVIDENCE := $(CURDIR)/.tools/runtime-evidence.json
 BUF := $(TOOLS_BIN)/buf
 BUF_VERSION := v1.57.2
 PROTOC_GEN_GO_VERSION := v1.36.9
@@ -69,7 +70,9 @@ lint: proto-lint
 	cd deploy/edge/krakend/plugins/no-redirect && go vet ./...
 
 test:
-	go test -race -count=1 -timeout 45m ./...
+	rm -f $(RUNTIME_EVIDENCE)
+	CASHFLOW_RUNTIME_EVIDENCE_FILE=$(RUNTIME_EVIDENCE) go test -race -count=1 -timeout 45m -run '^TestRealEdgeIdentityRuntime$$' ./test/integration
+	CASHFLOW_SKIP_REAL_E2E=1 CASHFLOW_RUNTIME_EVIDENCE_FILE=$(RUNTIME_EVIDENCE) go test -race -count=1 -timeout 45m ./...
 	cd deploy/edge/krakend/plugins/no-redirect && go test -race -count=1 ./...
 
 bdd-parse:
@@ -80,7 +83,9 @@ clean-reports:
 
 reports:
 	mkdir -p evidence/reports
-	go test -race -count=1 -timeout 45m -json ./... > evidence/reports/go-test.json
+	rm -f $(RUNTIME_EVIDENCE)
+	CASHFLOW_RUNTIME_EVIDENCE_FILE=$(RUNTIME_EVIDENCE) go test -race -count=1 -timeout 45m -json -run '^TestRealEdgeIdentityRuntime$$' ./test/integration > evidence/reports/go-test.json
+	CASHFLOW_SKIP_REAL_E2E=1 CASHFLOW_RUNTIME_EVIDENCE_FILE=$(RUNTIME_EVIDENCE) go test -race -count=1 -timeout 45m -json ./... >> evidence/reports/go-test.json
 	go run ./cmd/bddcheck -features features -manifest features/implemented_scenarios.txt -json > evidence/reports/bdd-catalog.json
 
 ci: check-go-version generate-check format-check lint proto-breaking build test bdd-parse

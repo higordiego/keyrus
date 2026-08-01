@@ -161,7 +161,7 @@ func TestLogHandlerDeeplyRedactsAnyValues(t *testing.T) {
 	logger := slog.New(redact.NewHandler(slog.NewJSONHandler(&buffer, nil)))
 
 	logger.Error("adapter failure",
-		slog.Any("error", fmt.Errorf("upstream echoed Bearer %s", sampleJWT)),
+		slog.Any("error", fmt.Errorf("upstream echoed Bearer %s idempotency-key=secret-key description=fornecedor-confidencial amount_minor=987654321", sampleJWT)),
 		slog.Any("payload", dangerousRecord{
 			Authorization: "Bearer " + sampleJWT,
 			Description:   "fornecedor confidencial",
@@ -175,7 +175,7 @@ func TestLogHandlerDeeplyRedactsAnyValues(t *testing.T) {
 	)
 
 	output := buffer.String()
-	for _, forbidden := range []string{sampleJWT, "fornecedor confidencial", "secret-key", "100.00", "-30.00", "unsafe-string-view"} {
+	for _, forbidden := range []string{sampleJWT, "fornecedor confidencial", "fornecedor-confidencial", "secret-key", "987654321", "100.00", "-30.00", "unsafe-string-view"} {
 		if strings.Contains(output, forbidden) {
 			t.Errorf("deep log output leaked %q: %s", forbidden, output)
 		}

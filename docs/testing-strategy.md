@@ -23,7 +23,7 @@ flowchart LR
 | Implementado | A tag está no manifesto e possui binding real, fixture e asserção contra o sistema. |
 | Verificado | O cenário implementado passou no ambiente exigido e publicou a evidência definida nesta estratégia. |
 
-No estado atual existem **81 aprovados, 81 pendentes de implementação, 0 implementados e 0 verificados por comportamento**.
+No estado atual existem **81 aprovados, 71 pendentes de implementação e 10 tags T02 implementadas/verificadas pelo runtime de segurança**.
 
 ## Níveis de teste
 
@@ -73,16 +73,16 @@ Esta análise AST deliberadamente não usa tipos: métodos homônimos em recepto
 
 ### Estado atual do wiring
 
-Hoje o manifesto está vazio, mas `TestImplementedScenarios` liga `test/bdd/steps.Initialize`, `internal/bddrunner.Run` e `internal/bddguard`. O runner rejeita seleção vazia e o teste comprova essa rejeição explicitamente, sem declarar comportamento de negócio executado.
+O manifesto liga 10 tags T02 a `TestImplementedScenarios`, `test/bdd/steps.Initialize`, `internal/bddrunner.Run` e `internal/bddguard`. Os bindings exigem evidência estruturada produzida pelo E2E real com Keycloak, KrakenD, imagens finais das APIs e Collector; execução Godog isolada dispara esse runtime antes dos cenários.
 
 Consequências práticas:
 
-- o `PASS` atual prova catálogo, parsing, reconciliação do inventário Godog e guards não vacuosos;
+- o `PASS` atual prova catálogo, parsing, reconciliação e os 10 oráculos T02 contra runtime real;
 - adicionar uma tag ao manifesto sem binding real fará o runner reprovar por step indefinido;
-- fixtures automatizadas provam “binding real com efeito observável passa; tag sem binding, manifesto/tag inválida, undefined, pending, skip e handler vazio por `Step`/`Given`/`When`/`Then` falham”;
+- fixtures automatizadas continuam provando que tag sem binding, manifesto/tag inválida, undefined, pending, skip e handler vazio falham;
 - não existe filtro local para executar uma única tag implementada; a suíte usa o manifesto inteiro.
 
-A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a allowlist versionada continua sendo a seleção oficial. Apesar de o wiring estar testado, o manifesto vazio continua sem provar qualquer comportamento financeiro ou integração dos serviços.
+A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a allowlist versionada continua sendo a seleção oficial. As tags atuais provam somente identidade, gateway, transporte gRPC e telemetria do T02, nunca regras financeiras.
 
 ## Comandos locais
 

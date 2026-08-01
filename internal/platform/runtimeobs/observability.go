@@ -11,6 +11,10 @@ import (
 	"time"
 
 	"github.com/higordiegoti/keyrus/internal/platform/observability/tracecontext"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 type Metrics struct {
@@ -19,6 +23,23 @@ type Metrics struct {
 	failures           atomic.Uint64
 	idempotencyHeaders atomic.Uint64
 	traceHeaders       atomic.Uint64
+}
+
+const (
+	publicReadTimeout  = 5 * time.Second
+	publicWriteTimeout = 5 * time.Second
+	publicIdleTimeout  = 30 * time.Second
+)
+
+// HTTPServer applies complete connection budgets, including body reads.
+func HTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       publicReadTimeout,
+		WriteTimeout:      publicWriteTimeout,
+		IdleTimeout:       publicIdleTimeout,
+	}
 }
 
 func (m *Metrics) Observe(request *http.Request, status int) {
@@ -76,6 +97,24 @@ func (r *responseRecorder) Write(body []byte) (int, error) {
 func Middleware(service string, metrics *Metrics, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		started := time.Now()
+		state := tracecontext.SanitizeTraceState(request.Header.Get(tracecontext.TraceStateHeader))
+		parent := request.Context()
+		if carrier, _, ok := tracecontext.FromContext(parent); ok {
+			parent = tracecontext.WithRemoteParent(parent, carrier, state)
+		} else if carrier, err := tracecontext.ParseTraceParent(request.Header.Get(tracecontext.TraceParentHeader)); err == nil {
+			parent = tracecontext.WithRemoteParent(parent, carrier, state)
+		}
+		spanContext, span := otel.Tracer("cashflow/runtimeobs").Start(parent,
+			request.Method+" "+request.URL.Path,
+			oteltrace.WithSpanKind(oteltrace.SpanKindServer),
+			oteltrace.WithAttributes(
+				attribute.String("http.request.method", request.Method),
+				attribute.String("url.path", request.URL.Path),
+				attribute.String("service.name", service),
+			),
+		)
+		spanContext = tracecontext.WithCurrentSpan(spanContext, state)
+		request = request.WithContext(spanContext)
 		recorder := &responseRecorder{ResponseWriter: writer}
 		next.ServeHTTP(recorder, request)
 		status := recorder.status
@@ -83,6 +122,11 @@ func Middleware(service string, metrics *Metrics, logger *slog.Logger, next http
 			status = http.StatusOK
 		}
 		metrics.Observe(request, status)
+		span.SetAttributes(attribute.Int("http.response.status_code", status))
+		if status >= 500 {
+			span.SetStatus(otelcodes.Error, "server_error")
+		}
+		span.End()
 		attributes := []any{
 			slog.String("service", service),
 			slog.String("method", request.Method),

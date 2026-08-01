@@ -15,6 +15,11 @@ is returned to the client, whose explicit repetition must reuse the same
 `Idempotency-Key`. The router rate limits are local to each KrakenD replica:
 they are abuse protection, not a distributed quota or a financial control.
 
+The three browser/token OIDC routes have a 15-second backend budget. The global
+`write_timeout` is 20 seconds so a cold Keycloak still has five seconds of
+response-write margin; it must always remain greater than the largest endpoint
+timeout. Transport errors are terminal in the PKCE smoke and are never retried.
+
 Validate the file with the same pinned Community Edition line:
 
 ```sh

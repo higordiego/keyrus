@@ -30,12 +30,17 @@ import (
 func main() {
 	logger := slog.New(redact.NewHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(logger); err != nil {
-		logger.Error("consolidation-api stopped", slog.Any("error", err))
+		logger.Error("consolidation-api stopped", slog.String("error_class", runtimeobs.ErrorClass(err)))
 		os.Exit(1)
 	}
 }
 
 func run(logger *slog.Logger) error {
+	tracerProvider, err := runtimeobs.NewTracerProvider(context.Background(), "consolidation-api", required("CASHFLOW_OTLP_ENDPOINT"))
+	if err != nil {
+		return err
+	}
+	defer shutdownTracing(tracerProvider.Shutdown)
 	issuer := required("CASHFLOW_OIDC_ISSUER")
 	jwksURL := required("CASHFLOW_OIDC_JWKS_URL")
 	caFile := required("CASHFLOW_OIDC_CA_FILE")
@@ -109,10 +114,13 @@ func run(logger *slog.Logger) error {
 	defer managementListener.Close()
 
 	var ready atomic.Bool
-	publicServer := &http.Server{Handler: handler, ReadHeaderTimeout: 2 * time.Second}
+	publicServer := runtimeobs.HTTPServer(handler)
 	managementServer := &http.Server{
 		Handler:           runtimeobs.ManagementHandler("consolidation-api", ready.Load, metrics),
 		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
 	errorsChannel := make(chan error, 2)
 	go func() { errorsChannel <- normalizeServeError(publicServer.Serve(httpListener)) }()
@@ -136,6 +144,12 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	return managementServer.Shutdown(shutdown)
+}
+
+func shutdownTracing(shutdown func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = shutdown(ctx)
 }
 
 func readSecret(path string) (string, error) {
