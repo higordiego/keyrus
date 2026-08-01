@@ -18,6 +18,11 @@ func (s *stubStore) Apply(context.Context, domain.EntryConfirmed) (ProjectionRes
 	return ProjectionResult{AppliedPosition: 1, SourcePosition: 1}, s.err
 }
 
+func (s *stubStore) ResumeNext(context.Context, string) (RecomputeResult, error) {
+	s.called = true
+	return RecomputeResult{Processed: true}, s.err
+}
+
 func TestProjectorValidatesBeforeStore(t *testing.T) {
 	store := &stubStore{}
 	projector, err := NewProjector(store)
@@ -39,5 +44,16 @@ func TestClassifyFailure(t *testing.T) {
 	}
 	if got := ClassifyFailure(errors.New("database unavailable")); got != FailureRetry {
 		t.Fatalf("transient classification = %q", got)
+	}
+}
+
+func TestResumeRecomputeRequiresMerchant(t *testing.T) {
+	store := &stubStore{}
+	projector, err := NewProjector(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projector.ResumeRecompute(context.Background(), ""); err == nil || store.called {
+		t.Fatalf("invalid resume reached store: err=%v called=%v", err, store.called)
 	}
 }
