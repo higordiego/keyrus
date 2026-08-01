@@ -49,7 +49,7 @@ func NewConsolidationHTTPHandler(config ConsolidationHTTPConfig) (http.Handler, 
 		return nil, err
 	}
 	mux := http.NewServeMux()
-	mux.Handle("GET /v1/daily-balances", runtimeobs.Middleware("consolidation-api", config.Metrics, config.Logger, guard(gateway)))
+	mux.Handle("GET /v1/daily-balances", guard(runtimeobs.Middleware("consolidation-api", config.Metrics, config.Logger, gateway)))
 	return mux, nil
 }
 

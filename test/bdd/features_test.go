@@ -2,6 +2,9 @@ package bdd_test
 
 import (
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,6 +13,7 @@ import (
 	"github.com/higordiegoti/keyrus/internal/bddguard"
 	"github.com/higordiegoti/keyrus/internal/bddrunner"
 	"github.com/higordiegoti/keyrus/test/bdd/steps"
+	"github.com/higordiegoti/keyrus/test/support/runtimeevidence"
 )
 
 const (
@@ -48,6 +52,7 @@ func TestAllFeaturesParseWithGodog(t *testing.T) {
 }
 
 func TestImplementedScenarios(t *testing.T) {
+	ensureRuntimeEvidence(t)
 	catalog, err := bddcatalog.Load(featuresDir, manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -69,4 +74,28 @@ func TestImplementedScenarios(t *testing.T) {
 	} else if runErr != nil {
 		t.Fatal(runErr)
 	}
+}
+
+func ensureRuntimeEvidence(t *testing.T) {
+	t.Helper()
+	if path := os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE"); path != "" {
+		if _, err := runtimeevidence.Load(path); err == nil {
+			return
+		}
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "runtime-evidence.json")
+	command := exec.Command("go", "test", "-race", "-count=1", "-timeout", "30m", "-run", "^TestRealEdgeIdentityRuntime$", "./test/integration")
+	command.Dir = root
+	command.Env = append(os.Environ(), "CASHFLOW_RUNTIME_EVIDENCE_FILE="+path)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("execute real runtime for Godog bindings: %v\n%s", err, output)
+	}
+	if _, err := runtimeevidence.Load(path); err != nil {
+		t.Fatalf("validate runtime evidence: %v", err)
+	}
+	t.Setenv("CASHFLOW_RUNTIME_EVIDENCE_FILE", path)
 }

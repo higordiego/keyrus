@@ -13,7 +13,7 @@ Este diretório concentra o harness executável. A documentação prática está
 - `TestImplementedScenarios` conecta `steps.Initialize`, `bddguard.ValidateStepSources` e `bddrunner.Run`.
 - Fixtures de política provam que binding real com efeito observável passa, enquanto tag sem binding, manifesto/tag inválida, `pending`, `skip` e handlers triviais por `Step`/`Given`/`When`/`Then` falham.
 - O catálogo é deliberadamente plano nesta versão: um bloco `Regra:` é rejeitado com erro preciso, nunca descartado silenciosamente.
-- `features/implemented_scenarios.txt` está vazio: **0 cenários de negócio estão implementados**.
+- O manifesto liga 10 tags T02 a evidência fresca do runtime real; os demais cenários continuam pendentes.
 - Cenários fora do manifesto são especificações aprovadas, não testes executados nem evidência de implementação.
 - `undefined`, `pending`, `ambiguous` ou `skipped` não podem contar como sucesso quando um cenário entrar na suíte implementada.
 - Múltiplas tags do manifesto usam a sintaxe OR legada do Godog v0.15.1 (`@A,@B`); um teste executa duas tags e impede seleção vazia por filtro incompatível.
@@ -25,7 +25,7 @@ make bdd-parse
 go test -race ./test/bdd/...
 ```
 
-O resultado esperado neste estágio é `14 features`, `81 unique scenarios` e `0 implemented`. O manifesto vazio é submetido ao runner e sua seleção vacuosa precisa ser rejeitada como esperado pelo teste. Assim, um `PASS` comprova catálogo, parsing, reconciliação Godog–catálogo e política não vacuosa do harness; ele não prova comportamento financeiro, persistência, mensageria nem integração dos serviços.
+O resultado esperado é `14 features`, `81 unique scenarios` e `10 implemented`. A suíte Godog exige evidência emitida por Keycloak, KrakenD, imagens finais das APIs e Collector reais; sem esse artefato fresco ela própria executa o E2E. Isso não declara comportamento financeiro, persistência ou mensageria.
 
 `make reports` gera `evidence/reports/bdd-catalog.json` e `evidence/reports/go-test.json`; o CI publica esses arquivos como artefato. Eles são saídas transitórias ignoradas pelo Git e não estão presentes em um clone até a geração.
 

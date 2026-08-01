@@ -1,19 +1,21 @@
 package integration_test
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,6 +26,7 @@ import (
 	"github.com/higordiegoti/keyrus/internal/platform/identityruntime"
 	"github.com/higordiegoti/keyrus/internal/platform/observability/tracecontext"
 	"github.com/higordiegoti/keyrus/test/support/internalgrpc"
+	"github.com/higordiegoti/keyrus/test/support/runtimeevidence"
 	"github.com/higordiegoti/keyrus/test/support/testpki"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
@@ -52,21 +55,28 @@ type runtimeStack struct {
 	ledger          testcontainers.Container
 	consolidation   testcontainers.Container
 	krakend         testcontainers.Container
+	collector       testcontainers.Container
 	pki             testpki.Bundle
 	keycloakBaseURL string
 	edgeBaseURL     string
 	ledgerGRPC      string
+	ledgerHTTP      string
 	ledgerMetrics   string
 	directHTTP      *http.Client
 	secrets         map[string]string
 }
 
 func TestRealEdgeIdentityRuntime(t *testing.T) {
+	if os.Getenv("CASHFLOW_SKIP_REAL_E2E") == "1" {
+		t.Skip("real E2E already executed by the gate")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	stack := startRuntimeStack(t, ctx)
 
 	t.Run("containers run as non-root and health is private", func(t *testing.T) {
+		assertImage(t, ctx, stack.ledger, "cashflow-ledger-t02-e2e:local")
+		assertImage(t, ctx, stack.consolidation, "cashflow-consolidation-t02-e2e:local")
 		assertUID(t, ctx, stack.ledger, "65532")
 		assertUID(t, ctx, stack.consolidation, "65532")
 		assertHTTPStatus(t, stack.directHTTP, stack.ledgerMetrics+"/health/ready", http.StatusNoContent)
@@ -106,7 +116,12 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		response := authorizedEdgeRequest(t, stack, merchantARead, http.MethodGet, "/v1/entries/entry-owned-by-a", nil, "")
 		assertResponseStatus(t, response, http.StatusOK)
 		response = authorizedEdgeRequest(t, stack, merchantARead, http.MethodGet, "/v1/entries/entry-owned-by-b", nil, "")
-		assertResponseStatus(t, response, http.StatusNotFound)
+		crossStatus, crossBody := responseStatusBody(t, response)
+		response = authorizedEdgeRequest(t, stack, merchantARead, http.MethodGet, "/v1/entries/entry-that-never-existed", nil, "")
+		absentStatus, absentBody := responseStatusBody(t, response)
+		if crossStatus != http.StatusNotFound || crossStatus != absentStatus || string(crossBody) != string(absentBody) {
+			t.Fatalf("cross-tenant response differs from absent resource: cross=%d %s absent=%d %s", crossStatus, crossBody, absentStatus, absentBody)
+		}
 		response = authorizedEdgeRequest(t, stack, merchantBRead, http.MethodGet, "/v1/entries/entry-owned-by-b", nil, "")
 		assertResponseStatus(t, response, http.StatusOK)
 
@@ -115,12 +130,27 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		assertResponseStatus(t, response, http.StatusForbidden)
 		response = authorizedEdgeRequest(t, stack, "not.a.jwt", http.MethodGet, "/v1/entries", nil, "")
 		assertResponseStatus(t, response, http.StatusUnauthorized)
+		response = authorizedEdgeRequest(t, stack, corruptJWT(merchantARead), http.MethodGet, "/v1/entries", nil, "")
+		assertResponseStatus(t, response, http.StatusUnauthorized)
 		response = authorizedEdgeRequest(t, stack, consolidationServiceToken, http.MethodGet, "/v1/entries", nil, "")
 		assertResponseStatus(t, response, http.StatusUnauthorized)
 		after := metricValue(t, stack, "cashflow_http_requests_total")
 		if after != before {
 			t.Fatalf("edge refusal reached Ledger: requests changed from %d to %d", before, after)
 		}
+	})
+
+	t.Run("final Ledger image rejects direct invalid identity", func(t *testing.T) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, stack.ledgerHTTP+"/v1/entries", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer not.a.jwt")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertResponseStatus(t, response, http.StatusUnauthorized)
 	})
 
 	t.Run("real command is forwarded once with safe headers", func(t *testing.T) {
@@ -170,6 +200,9 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		}
 		assertResponseStatus(t, response, http.StatusOK)
 		waitForContainerLog(t, ctx, stack.ledger, span.TraceID)
+		waitForContainerLog(t, ctx, stack.collector, span.TraceID)
+		collectorLogs := waitForContainerLog(t, ctx, stack.collector, span.SpanID)
+		assertTraceLineage(t, collectorLogs, span)
 
 		response = authorizedEdgeRequest(t, stack, merchantBConsolidation, http.MethodGet, "/v1/daily-balances", nil, "")
 		if response.StatusCode < 500 {
@@ -178,6 +211,20 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 			t.Fatalf("undelegated merchant reached internal RPC: status %d body %s", response.StatusCode, body)
 		}
 		response.Body.Close()
+	})
+
+	t.Run("slow chunked body is bounded by the final image server", func(t *testing.T) {
+		assertSlowBodyBounded(t, stack, merchantAWrite)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, stack.ledgerHTTP+"/v1/entries", strings.NewReader(strings.Repeat("x", (1<<20)+1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+merchantAWrite)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertResponseStatus(t, response, http.StatusRequestEntityTooLarge)
 	})
 
 	t.Run("generated gRPC runtime enforces health, tenant and stream scopes", func(t *testing.T) {
@@ -199,14 +246,14 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 
 		connection := authenticatedGRPCConnection(t, stack, clientTLS, consolidationServiceToken)
 		defer connection.Close()
-		callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+		callCtx, callCancel := context.WithTimeout(ctx, 10*time.Second)
 		_, err = internalgrpc.StreamEntries(callCtx, connection, merchantAID)
 		callCancel()
 		if status.Code(err) != codes.PermissionDenied {
 			t.Fatalf("consolidation identity opened reconciliation stream: got %v\nLedger:\n%s", err,
 				containerLogs(t, stack.ctx, stack.ledger))
 		}
-		callCtx, callCancel = context.WithTimeout(ctx, 5*time.Second)
+		callCtx, callCancel = context.WithTimeout(ctx, 10*time.Second)
 		_, err = internalgrpc.GetWatermark(callCtx, connection, merchantBID)
 		callCancel()
 		if status.Code(err) != codes.PermissionDenied {
@@ -216,7 +263,7 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		reconciliationToken := serviceToken(t, stack, reconciliationClient, stack.secrets["CASHFLOW_RECONCILIATION_CLIENT_SECRET"])
 		reconciliationConnection := authenticatedGRPCConnection(t, stack, clientTLS, reconciliationToken)
 		defer reconciliationConnection.Close()
-		callCtx, callCancel = context.WithTimeout(ctx, 5*time.Second)
+		callCtx, callCancel = context.WithTimeout(ctx, 10*time.Second)
 		if _, err := internalgrpc.StreamEntries(callCtx, reconciliationConnection, merchantAID); err != nil {
 			t.Fatalf("reconciliation identity with both scopes was refused: %v", err)
 		}
@@ -224,7 +271,9 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 	})
 
 	t.Run("real telemetry excludes credentials and payload", func(t *testing.T) {
-		logs := containerLogs(t, stack.ctx, stack.ledger) + containerLogs(t, stack.ctx, stack.consolidation)
+		logs := containerLogs(t, stack.ctx, stack.ledger) + containerLogs(t, stack.ctx, stack.consolidation) +
+			containerLogs(t, stack.ctx, stack.krakend) + containerLogs(t, stack.ctx, stack.keycloak) +
+			containerLogs(t, stack.ctx, stack.collector)
 		sensitive := []string{
 			merchantARead, merchantAWrite, consolidationServiceToken,
 			stack.secrets["CASHFLOW_CONSOLIDATION_CLIENT_SECRET"],
@@ -237,6 +286,36 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 			}
 		}
 	})
+	if !t.Failed() {
+		writeRuntimeEvidence(t)
+	}
+}
+
+func writeRuntimeEvidence(t *testing.T) {
+	t.Helper()
+	path := os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE")
+	if path == "" {
+		return
+	}
+	evidence := runtimeevidence.Evidence{
+		GeneratedAt: time.Now().UTC(),
+		Runtime:     "keycloak+krakend+ledger-image+consolidation-image+otel-collector",
+		Scenarios: map[string]runtimeevidence.Scenario{
+			"@SCN-RNF06-001": {Assertions: []string{"real merchant token determines tenant", "authorized resource remains tenant scoped"}},
+			"@SCN-RNF06-002": {Assertions: []string{"missing malformed and wrong-audience credentials rejected before adapter"}},
+			"@SCN-RNF06-003": {Assertions: []string{"cross-merchant and absent resources share the not-found contract"}},
+			"@SCN-RNF08-002": {Assertions: []string{"KrakenD real validator rejects invalid JWT without forwarding"}},
+			"@SCN-RNF08-003": {Assertions: []string{"final Ledger image repeats authentication on direct access"}},
+			"@SCN-RNF08-004": {Assertions: []string{"allowlisted authorization idempotency and trace headers reach adapter once"}},
+			"@SCN-RNF08-005": {Assertions: []string{"real KrakenD performs one backend POST and has no retry component"}},
+			"@SCN-RNF08-008": {Assertions: []string{"admin health metrics and internal surfaces have no public edge route"}},
+			"@SCN-RNF08-009": {Assertions: []string{"generated watermark RPC requires mTLS service JWT scope and tenant delegation"}},
+			"@SCN-RNF09-004": {Assertions: []string{"collector proves HTTP to gRPC parentage", "deadline size and cancellation enforced", "logs and spans exclude sensitive values"}},
+		},
+	}
+	if err := runtimeevidence.Write(path, evidence); err != nil {
+		t.Fatalf("write runtime evidence: %v", err)
+	}
 }
 
 func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
@@ -259,9 +338,9 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 		"CASHFLOW_MERCHANT_B_PASSWORD":          randomCredential(t),
 	}
 	realm := renderRealm(t, secrets)
-	ledgerBinary := buildGoBinary(t, ctx, repositoryRoot, temporary, "ledger-api", "./cmd/ledger-api")
-	consolidationBinary := buildGoBinary(t, ctx, repositoryRoot, temporary, "consolidation-api", "./cmd/consolidation-api")
 	buildDockerImage(t, ctx, repositoryRoot, "cashflow-krakend-t02-e2e:local", "deploy/edge/krakend.Containerfile")
+	buildDockerImage(t, ctx, repositoryRoot, "cashflow-ledger-t02-e2e:local", "deploy/identity/ledger-api.Containerfile")
+	buildDockerImage(t, ctx, repositoryRoot, "cashflow-consolidation-t02-e2e:local", "deploy/identity/consolidation-api.Containerfile")
 	serviceSecretFile := filepath.Join(temporary, "consolidation-secret")
 	if err := os.WriteFile(serviceSecretFile, []byte(secrets["CASHFLOW_CONSOLIDATION_CLIENT_SECRET"]), 0o600); err != nil {
 		t.Fatal(err)
@@ -282,6 +361,17 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 			"POSTGRES_PASSWORD": databasePassword,
 		},
 		WaitingFor: wait.ForListeningPort("5432/tcp").WithStartupTimeout(2 * time.Minute),
+	})
+
+	collector := runContainer(t, ctx, testcontainers.ContainerRequest{
+		Image:          "otel/opentelemetry-collector-contrib:0.135.0",
+		Networks:       []string{nw.Name},
+		NetworkAliases: map[string][]string{nw.Name: {"otel-collector"}},
+		Cmd:            []string{"--config=/etc/otelcol/config.yaml"},
+		Files: []testcontainers.ContainerFile{
+			containerFile(filepath.Join("testdata", "otel-collector.yaml"), "/etc/otelcol/config.yaml", 0o644),
+		},
+		WaitingFor: wait.ForLog("Everything is ready").WithStartupTimeout(90 * time.Second),
 	})
 
 	keycloak := runContainer(t, ctx, testcontainers.ContainerRequest{
@@ -316,10 +406,8 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 	}
 
 	ledger := runContainer(t, ctx, testcontainers.ContainerRequest{
-		Image:          "alpine:3.22",
-		User:           "65532:65532",
-		Entrypoint:     []string{"/usr/local/bin/ledger-api"},
-		ExposedPorts:   []string{"9081/tcp", "9091/tcp"},
+		Image:          "cashflow-ledger-t02-e2e:local",
+		ExposedPorts:   []string{"8081/tcp", "9081/tcp", "9091/tcp"},
 		Networks:       []string{nw.Name},
 		NetworkAliases: map[string][]string{nw.Name: {"ledger-api"}},
 		Env: map[string]string{
@@ -332,9 +420,10 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 			"CASHFLOW_SERVICE_TENANT_DELEGATIONS": "cashflow-consolidation-svc=" + merchantAID + ";cashflow-reconciliation-svc=" + merchantAID,
 			"CASHFLOW_IDENTITY_FIXTURE_OWNERS":    "entry-owned-by-a=" + merchantAID + ";entry-owned-by-b=" + merchantBID,
 			"CASHFLOW_SOURCE_POSITION":            "42",
+			"CASHFLOW_GRPC_MAX_DEADLINE":          "10s",
+			"CASHFLOW_OTLP_ENDPOINT":              "otel-collector:4317",
 		},
 		Files: []testcontainers.ContainerFile{
-			containerFile(ledgerBinary, "/usr/local/bin/ledger-api", 0o755),
 			containerFile(pki.CA, "/etc/cashflow/ca.pem", 0o644),
 			containerFile(pki.Ledger.CertFile, "/etc/cashflow/ledger.crt", 0o644),
 			containerFile(pki.Ledger.KeyFile, "/etc/cashflow/ledger.key", 0o644),
@@ -345,10 +434,8 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 	})
 
 	consolidation := runContainer(t, ctx, testcontainers.ContainerRequest{
-		Image:          "alpine:3.22",
-		User:           "65532:65532",
-		Entrypoint:     []string{"/usr/local/bin/consolidation-api"},
-		ExposedPorts:   []string{"9092/tcp"},
+		Image:          "cashflow-consolidation-t02-e2e:local",
+		ExposedPorts:   []string{"8082/tcp", "9092/tcp"},
 		Networks:       []string{nw.Name},
 		NetworkAliases: map[string][]string{nw.Name: {"consolidation-api"}},
 		Env: map[string]string{
@@ -362,9 +449,9 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 			"CASHFLOW_GRPC_TLS_KEY_FILE":          "/etc/cashflow/consolidation.key",
 			"CASHFLOW_GRPC_CA_FILE":               "/etc/cashflow/ca.pem",
 			"CASHFLOW_GRPC_SERVER_NAME":           "ledger-api",
+			"CASHFLOW_OTLP_ENDPOINT":              "otel-collector:4317",
 		},
 		Files: []testcontainers.ContainerFile{
-			containerFile(consolidationBinary, "/usr/local/bin/consolidation-api", 0o755),
 			containerFile(pki.CA, "/etc/cashflow/ca.pem", 0o644),
 			containerFile(pki.Consolidation.CertFile, "/etc/cashflow/consolidation.crt", 0o644),
 			containerFile(pki.Consolidation.KeyFile, "/etc/cashflow/consolidation.key", 0o644),
@@ -396,6 +483,10 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 		t.Fatal(err)
 	}
 	ledgerGRPC = strings.TrimPrefix(ledgerGRPC, "://")
+	ledgerHTTP, err := ledger.PortEndpoint(ctx, "8081/tcp", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ledgerMetrics, err := ledger.PortEndpoint(ctx, "9091/tcp", "http")
 	if err != nil {
 		t.Fatal(err)
@@ -407,28 +498,22 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 	// The host port is mapped to localhost, while the ephemeral certificate is
 	// deliberately issued to the container-network identity used in production.
 	directHTTP.Transport.(*http.Transport).TLSClientConfig.ServerName = "keycloak"
-	return runtimeStack{ctx: ctx, keycloak: keycloak, ledger: ledger, consolidation: consolidation, krakend: krakend, pki: pki,
-		keycloakBaseURL: keycloakBaseURL, edgeBaseURL: edgeBaseURL, ledgerGRPC: ledgerGRPC, ledgerMetrics: ledgerMetrics,
+	return runtimeStack{ctx: ctx, keycloak: keycloak, ledger: ledger, consolidation: consolidation, krakend: krakend, collector: collector, pki: pki,
+		keycloakBaseURL: keycloakBaseURL, edgeBaseURL: edgeBaseURL, ledgerGRPC: ledgerGRPC, ledgerHTTP: ledgerHTTP, ledgerMetrics: ledgerMetrics,
 		directHTTP: directHTTP, secrets: secrets}
-}
-
-func buildGoBinary(t *testing.T, ctx context.Context, repositoryRoot, temporary, name, packagePath string) string {
-	t.Helper()
-	output := filepath.Join(temporary, name)
-	command := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", output, packagePath)
-	command.Dir = repositoryRoot
-	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
-	if combined, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build %s runtime: %v: %s", name, err, combined)
-	}
-	return output
 }
 
 func buildDockerImage(t *testing.T, ctx context.Context, repositoryRoot, image, dockerfile string) {
 	t.Helper()
 	command := exec.CommandContext(ctx, "docker", "build", "-f", dockerfile, "-t", image, ".")
 	command.Dir = repositoryRoot
-	command.Env = append(os.Environ(), "DOCKER_BUILDKIT=0")
+	buildkit := "1"
+	if strings.Contains(dockerfile, "krakend") {
+		// The KrakenD Go plugin must be built by the classic builder so its
+		// toolchain paths match the pinned runtime ABI exactly.
+		buildkit = "0"
+	}
+	command.Env = append(os.Environ(), "DOCKER_BUILDKIT="+buildkit)
 	if combined, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build %s: %v: %s", image, err, combined)
 	}
@@ -581,18 +666,10 @@ func loginForm(t *testing.T, body io.Reader) (string, url.Values) {
 
 func edgeRequest(t *testing.T, stack runtimeStack, client *http.Client, method, target string, body io.Reader, contentType string) *http.Response {
 	t.Helper()
-	attempts := 1
-	if method == http.MethodGet && body == nil {
-		attempts = 3
-	}
-	var err error
-	for attempt := 1; attempt <= attempts; attempt++ {
-		request := newEdgeRequest(t, stack, method, target, body, contentType)
-		response, requestErr := client.Do(request)
-		if requestErr == nil {
-			return response
-		}
-		err = requestErr
+	request := newEdgeRequest(t, stack, method, target, body, contentType)
+	response, err := client.Do(request)
+	if err == nil {
+		return response
 	}
 	t.Fatalf("edge request %s %s: %v\nKrakenD:\n%s\nKeycloak:\n%s", method, target, err,
 		containerLogs(t, stack.ctx, stack.krakend), containerLogs(t, stack.ctx, stack.keycloak))
@@ -642,6 +719,28 @@ func assertResponseStatus(t *testing.T, response *http.Response, want int) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("status: got %d, want %d; body %s", response.StatusCode, want, body)
 	}
+}
+
+func responseStatusBody(t *testing.T, response *http.Response) (int, []byte) {
+	t.Helper()
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, body
+}
+
+func corruptJWT(token string) string {
+	if len(token) == 0 {
+		return token
+	}
+	last := token[len(token)-1]
+	replacement := byte('a')
+	if last == replacement {
+		replacement = 'b'
+	}
+	return token[:len(token)-1] + string(replacement)
 }
 
 func assertMerchantIdentity(t *testing.T, verifier *auth.Verifier, token, merchant, scope string) {
@@ -711,11 +810,11 @@ func serviceToken(t *testing.T, stack runtimeStack, clientID, secret string) str
 
 func authenticatedGRPCConnection(t *testing.T, stack runtimeStack, tlsConfig *tls.Config, token string) *grpc.ClientConn {
 	t.Helper()
-	unary, err := grpcsecurity.UnaryClientInterceptor(grpcsecurity.ClientConfig{Tokens: grpcsecurity.StaticToken(token), Deadline: 5 * time.Second})
+	unary, err := grpcsecurity.UnaryClientInterceptor(grpcsecurity.ClientConfig{Tokens: grpcsecurity.StaticToken(token), Deadline: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := grpcsecurity.StreamClientInterceptor(grpcsecurity.ClientConfig{Tokens: grpcsecurity.StaticToken(token), Deadline: 5 * time.Second})
+	stream, err := grpcsecurity.StreamClientInterceptor(grpcsecurity.ClientConfig{Tokens: grpcsecurity.StaticToken(token), Deadline: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +827,7 @@ func authenticatedGRPCConnection(t *testing.T, stack runtimeStack, tlsConfig *tl
 	return connection
 }
 
-func waitForContainerLog(t *testing.T, ctx context.Context, container testcontainers.Container, value string) {
+func waitForContainerLog(t *testing.T, ctx context.Context, container testcontainers.Container, value string) string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -737,12 +836,123 @@ func waitForContainerLog(t *testing.T, ctx context.Context, container testcontai
 			contents, _ := io.ReadAll(logs)
 			logs.Close()
 			if strings.Contains(string(contents), value) {
-				return
+				return string(contents)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("container logs never contained trace id %s", value)
+	return ""
+}
+
+func assertImage(t *testing.T, ctx context.Context, container testcontainers.Container, want string) {
+	t.Helper()
+	inspection, err := container.Inspect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := inspection.Config.Image
+	if got != want {
+		t.Fatalf("container image: got %q, want %q", got, want)
+	}
+}
+
+func assertTraceLineage(t *testing.T, logs string, caller tracecontext.SpanContext) {
+	t.Helper()
+	for _, required := range []string{"service.name: Str(consolidation-api)", "service.name: Str(ledger-api)", caller.TraceID, caller.SpanID,
+		"GET /v1/daily-balances", internalgrpc.WatermarkMethod} {
+		if !strings.Contains(logs, required) {
+			t.Fatalf("collector export omitted %q:\n%s", required, logs)
+		}
+	}
+	if strings.Contains(logs, "url.full") || strings.Contains(logs, "url.query") {
+		t.Fatalf("collector exported URL attributes that may contain OIDC credentials:\n%s", logs)
+	}
+	// The external caller span must be the parent of the HTTP server span; the
+	// same trace then contains distinct client and server gRPC spans.
+	if !strings.Contains(logs, "Parent ID      : "+caller.SpanID) {
+		t.Fatalf("collector export has no HTTP child of caller span %s:\n%s", caller.SpanID, logs)
+	}
+	spans := exportedSpans(logs, caller.TraceID)
+	var httpSpan, clientSpan, serverSpan exportedSpan
+	for _, span := range spans {
+		switch {
+		case span.Name == "GET /v1/daily-balances" && span.Kind == "Server":
+			httpSpan = span
+		case span.Name == internalgrpc.WatermarkMethod && span.Kind == "Client":
+			clientSpan = span
+		case span.Name == internalgrpc.WatermarkMethod && span.Kind == "Server":
+			serverSpan = span
+		}
+	}
+	if httpSpan.ID == "" || clientSpan.Parent != httpSpan.ID || serverSpan.Parent != clientSpan.ID {
+		t.Fatalf("invalid HTTP -> gRPC lineage: http=%+v client=%+v server=%+v", httpSpan, clientSpan, serverSpan)
+	}
+}
+
+type exportedSpan struct {
+	TraceID string
+	Parent  string
+	ID      string
+	Name    string
+	Kind    string
+}
+
+func exportedSpans(logs, traceID string) []exportedSpan {
+	var result []exportedSpan
+	for _, block := range strings.Split(logs, "Span #") {
+		span := exportedSpan{}
+		for _, line := range strings.Split(block, "\n") {
+			name, value, found := strings.Cut(strings.TrimSpace(line), ":")
+			if !found {
+				continue
+			}
+			switch strings.TrimSpace(name) {
+			case "Trace ID":
+				span.TraceID = strings.TrimSpace(value)
+			case "Parent ID":
+				span.Parent = strings.TrimSpace(value)
+			case "ID":
+				span.ID = strings.TrimSpace(value)
+			case "Name":
+				span.Name = strings.TrimSpace(value)
+			case "Kind":
+				span.Kind = strings.TrimSpace(value)
+			}
+		}
+		if span.TraceID == traceID && span.ID != "" {
+			result = append(result, span)
+		}
+	}
+	return result
+}
+
+func assertSlowBodyBounded(t *testing.T, stack runtimeStack, token string) {
+	t.Helper()
+	parsed, err := url.Parse(stack.ledgerHTTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.DialTimeout("tcp", parsed.Host, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	started := time.Now()
+	_, err = fmt.Fprintf(connection, "POST /v1/entries HTTP/1.1\r\nHost: ledger-api\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{\r\n", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(6 * time.Second)
+	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+	_, writeErr := fmt.Fprint(connection, "1\r\n}\r\n0\r\n\r\n")
+	_, readErr := bufio.NewReader(connection).ReadString('\n')
+	if writeErr == nil && readErr == nil {
+		t.Fatal("slow body remained connected after the server read timeout")
+	}
+	if elapsed := time.Since(started); elapsed > 9*time.Second {
+		t.Fatalf("slow body exceeded bounded connection budget: %s", elapsed)
+	}
 }
 
 func assertUID(t *testing.T, ctx context.Context, container testcontainers.Container, want string) {

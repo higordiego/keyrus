@@ -6,6 +6,10 @@ import (
 	"time"
 
 	"github.com/higordiegoti/keyrus/internal/platform/observability/tracecontext"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -40,12 +44,19 @@ func UnaryClientInterceptor(config ClientConfig) (grpc.UnaryClientInterceptor, e
 	}
 
 	return func(ctx context.Context, method string, request, reply any, connection *grpc.ClientConn, invoke grpc.UnaryInvoker, options ...grpc.CallOption) error {
-		prepared, cancel, err := prepare(ctx, config.Tokens, deadline)
+		spanContext, span := startClientSpan(ctx, method)
+		defer span.End()
+		prepared, cancel, err := prepare(spanContext, config.Tokens, deadline)
 		if err != nil {
+			span.SetStatus(otelcodes.Error, "credential_unavailable")
 			return err
 		}
 		defer cancel()
-		return invoke(prepared, method, request, reply, connection, options...)
+		err = invoke(prepared, method, request, reply, connection, options...)
+		if err != nil {
+			span.SetStatus(otelcodes.Error, "rpc_failed")
+		}
+		return err
 	}, nil
 }
 
@@ -63,17 +74,22 @@ func StreamClientInterceptor(config ClientConfig) (grpc.StreamClientInterceptor,
 	}
 
 	return func(ctx context.Context, description *grpc.StreamDesc, connection *grpc.ClientConn, method string, streamer grpc.Streamer, options ...grpc.CallOption) (grpc.ClientStream, error) {
-		prepared, cancel, err := prepare(ctx, config.Tokens, deadline)
+		spanContext, span := startClientSpan(ctx, method)
+		prepared, cancel, err := prepare(spanContext, config.Tokens, deadline)
 		if err != nil {
 			cancel()
+			span.SetStatus(otelcodes.Error, "credential_unavailable")
+			span.End()
 			return nil, err
 		}
 		stream, err := streamer(prepared, description, connection, method, options...)
 		if err != nil {
 			cancel()
+			span.SetStatus(otelcodes.Error, "rpc_failed")
+			span.End()
 			return nil, err
 		}
-		return cancellingStream{ClientStream: stream, cancel: cancel}, nil
+		return cancellingStream{ClientStream: stream, cancel: cancel, span: span}, nil
 	}, nil
 }
 
@@ -82,14 +98,31 @@ func StreamClientInterceptor(config ClientConfig) (grpc.StreamClientInterceptor,
 type cancellingStream struct {
 	grpc.ClientStream
 	cancel context.CancelFunc
+	span   oteltrace.Span
 }
 
 func (s cancellingStream) RecvMsg(message any) error {
 	err := s.ClientStream.RecvMsg(message)
 	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.span.SetStatus(otelcodes.Error, "rpc_failed")
+		}
 		s.cancel()
+		s.span.End()
 	}
 	return err
+}
+
+func startClientSpan(ctx context.Context, method string) (context.Context, oteltrace.Span) {
+	state := ""
+	if _, carried, ok := tracecontext.FromContext(ctx); ok {
+		state = carried
+	}
+	spanContext, span := otel.Tracer("cashflow/grpcsecurity").Start(ctx, method,
+		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
+		oteltrace.WithAttributes(attribute.String("rpc.system", "grpc"), attribute.String("rpc.method", method)),
+	)
+	return tracecontext.WithCurrentSpan(spanContext, state), span
 }
 
 func (s cancellingStream) CloseSend() error {

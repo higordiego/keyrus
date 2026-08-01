@@ -60,7 +60,7 @@ func NewLedgerHTTPHandler(config LedgerHTTPConfig) (http.Handler, error) {
 		if err != nil {
 			return nil, err
 		}
-		mux.Handle(route.pattern, runtimeobs.Middleware("ledger-api", config.Metrics, config.Logger, guard(gateway)))
+		mux.Handle(route.pattern, guard(runtimeobs.Middleware("ledger-api", config.Metrics, config.Logger, gateway)))
 	}
 	return mux, nil
 }

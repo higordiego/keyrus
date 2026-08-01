@@ -12,6 +12,10 @@ import (
 
 	"github.com/higordiegoti/keyrus/internal/platform/auth"
 	"github.com/higordiegoti/keyrus/internal/platform/observability/tracecontext"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -135,13 +139,19 @@ func UnaryServerInterceptor(config ServerConfig) (grpc.UnaryServerInterceptor, e
 			return nil, err
 		}
 		defer cancel()
+		guarded, span := startServerSpan(guarded, info.FullMethod)
+		defer span.End()
 		if _, exempt := healthMethods[info.FullMethod]; !exempt {
 			if err := authorizeTenant(guarded, config.Tenants, info.FullMethod, request); err != nil {
+				span.SetStatus(otelcodes.Error, "tenant_denied")
 				logRPC(config.Logger, guarded, info.FullMethod, started, err)
 				return nil, err
 			}
 		}
 		response, err := handler(guarded, request)
+		if err != nil {
+			span.SetStatus(otelcodes.Error, "rpc_failed")
+		}
 		logRPC(config.Logger, guarded, info.FullMethod, started, err)
 		return response, err
 	}, nil
@@ -161,6 +171,8 @@ func StreamServerInterceptor(config ServerConfig) (grpc.StreamServerInterceptor,
 			return err
 		}
 		defer cancel()
+		guarded, span := startServerSpan(guarded, info.FullMethod)
+		defer span.End()
 		err = handler(service, &guardedStream{
 			ServerStream: stream,
 			ctx:          guarded,
@@ -168,6 +180,9 @@ func StreamServerInterceptor(config ServerConfig) (grpc.StreamServerInterceptor,
 			method:       info.FullMethod,
 			exempt:       isHealthMethod(info.FullMethod),
 		})
+		if err != nil {
+			span.SetStatus(otelcodes.Error, "rpc_failed")
+		}
 		logRPC(config.Logger, guarded, info.FullMethod, started, err)
 		return err
 	}, nil
@@ -371,10 +386,23 @@ func logRPC(logger *slog.Logger, ctx context.Context, method string, started tim
 		attributes = append(attributes, slog.String("trace_id", span.TraceID))
 	}
 	if err != nil {
-		attributes = append(attributes, slog.Any("error", err), slog.String("grpc_code", status.Code(err).String()))
+		attributes = append(attributes, slog.String("error_class", "grpc_request_failed"), slog.String("grpc_code", status.Code(err).String()))
 		logger.WarnContext(ctx, "internal gRPC request completed", attributes...)
 		return
 	}
 	attributes = append(attributes, slog.String("grpc_code", codes.OK.String()))
 	logger.InfoContext(ctx, "internal gRPC request completed", attributes...)
+}
+
+func startServerSpan(ctx context.Context, method string) (context.Context, oteltrace.Span) {
+	state := ""
+	if carrier, carried, ok := tracecontext.FromContext(ctx); ok {
+		state = carried
+		ctx = tracecontext.WithRemoteParent(ctx, carrier, state)
+	}
+	spanContext, span := otel.Tracer("cashflow/grpcsecurity").Start(ctx, method,
+		oteltrace.WithSpanKind(oteltrace.SpanKindServer),
+		oteltrace.WithAttributes(attribute.String("rpc.system", "grpc"), attribute.String("rpc.method", method)),
+	)
+	return tracecontext.WithCurrentSpan(spanContext, state), span
 }
