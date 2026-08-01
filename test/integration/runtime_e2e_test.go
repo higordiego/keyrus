@@ -692,11 +692,12 @@ func faultState(t *testing.T, stack runtimeStack) faultBackendState {
 
 func assertNoWatermarkRoute(t *testing.T, stack runtimeStack) {
 	t.Helper()
-	code, output, err := stack.krakend.Exec(stack.ctx, []string{"cat", "/etc/krakend/krakend.json"})
-	if err != nil || code != 0 {
-		t.Fatalf("inspect running KrakenD routes: code=%d error=%v", code, err)
+	configFile, err := stack.krakend.CopyFileFromContainer(stack.ctx, "/etc/krakend/krakend.json")
+	if err != nil {
+		t.Fatalf("copy running KrakenD config: %v", err)
 	}
-	contents, err := io.ReadAll(output)
+	defer configFile.Close()
+	contents, err := io.ReadAll(configFile)
 	if err != nil {
 		t.Fatal(err)
 	}
