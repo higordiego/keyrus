@@ -232,7 +232,7 @@
     "/v1/entries/{entryId}/reversals": {
       "post": {
         "summary": "Create an integral reversal",
-        "description": "Creates one confirmed compensating entry and marks the original entry as reversed without rewriting its history.",
+        "description": "Creates one confirmed compensating entry. Reads project the original as reversed without updating its stored record or values.",
         "operationId": "LedgerService_CreateReversal",
         "responses": {
           "201": {
@@ -276,14 +276,6 @@
             "type": "string"
           },
           {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/LedgerServiceCreateReversalBody"
-            }
-          },
-          {
             "name": "Idempotency-Key",
             "description": "Required idempotency key for this reversal command.",
             "in": "header",
@@ -298,9 +290,6 @@
     }
   },
   "definitions": {
-    "LedgerServiceCreateReversalBody": {
-      "type": "object"
-    },
     "protobufAny": {
       "type": "object",
       "properties": {
@@ -437,7 +426,8 @@
         "ENTRY_STATE_CONFIRMED",
         "ENTRY_STATE_REVERSED"
       ],
-      "default": "ENTRY_STATE_UNSPECIFIED"
+      "default": "ENTRY_STATE_UNSPECIFIED",
+      "description": " - ENTRY_STATE_CONFIRMED: The entry is durably confirmed and has no confirmed compensation.\n - ENTRY_STATE_REVERSED: Read projection for an original entry that has a confirmed compensation."
     },
     "v1EntryType": {
       "type": "string",
@@ -505,10 +495,11 @@
         },
         "reversalEntryId": {
           "type": "string",
-          "description": "Set on an original entry after reversal. The original remains immutable and moves to REVERSED."
+          "description": "Read projection on an original entry when its compensation exists. This is\nderived from the compensating entry and is not persisted by updating the original."
         },
         "state": {
-          "$ref": "#/definitions/v1EntryState"
+          "$ref": "#/definitions/v1EntryState",
+          "description": "Read projection derived from confirmation and any compensating entry. REVERSED\nnever means that the stored original record or its financial values were updated."
         }
       }
     },
