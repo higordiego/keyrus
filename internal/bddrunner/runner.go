@@ -19,6 +19,7 @@ type Config struct {
 	FeatureContents []godog.Feature
 	Tags            []string
 	Initialize      func(*godog.ScenarioContext)
+	Randomize       int64
 }
 
 // Run fails on zero selected scenarios and on failed, undefined, pending,
@@ -70,6 +71,7 @@ func Run(config Config) error {
 			Tags:            tagExpression,
 			Paths:           config.Paths,
 			FeatureContents: config.FeatureContents,
+			Randomize:       config.Randomize,
 			Output:          io.Discard,
 		},
 	}.Run()

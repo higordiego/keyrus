@@ -60,6 +60,7 @@ func TestImplementedScenarios(t *testing.T) {
 		Paths:      []string{featuresDir},
 		Tags:       catalog.ImplementedScenarios,
 		Initialize: steps.Initialize,
+		Randomize:  20260801,
 	})
 	if len(catalog.ImplementedScenarios) == 0 {
 		if runErr == nil || !strings.Contains(runErr.Error(), "selection is empty") {

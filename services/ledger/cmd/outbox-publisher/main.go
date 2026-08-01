@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -39,6 +40,10 @@ type config struct {
 	confirmTimeout time.Duration
 	backoffBase    time.Duration
 	backoffMax     time.Duration
+}
+
+type workerRunner interface {
+	Run(context.Context) error
 }
 
 func main() {
@@ -83,6 +88,7 @@ func run(ctx context.Context, configuration config, logger *slog.Logger) error {
 	metrics := &outbox.Metrics{}
 	brokers := make([]*outbox.RabbitBroker, 0, configuration.workers)
 	workers := make([]*outbox.Worker, 0, configuration.workers)
+	readinessBrokers := make([]outbox.Broker, 0, configuration.workers)
 	for index := range configuration.workers {
 		broker, err := outbox.NewRabbitBroker(outbox.RabbitConfig{
 			URL:            configuration.rabbitURL,
@@ -96,13 +102,15 @@ func run(ctx context.Context, configuration config, logger *slog.Logger) error {
 			return err
 		}
 		brokers = append(brokers, broker)
+		readinessBrokers = append(readinessBrokers, broker)
 		worker, err := outbox.NewWorker(store, broker, outbox.WorkerConfig{
-			Owner:        fmt.Sprintf("%s-%d", configuration.workerID, index),
-			BatchSize:    configuration.batchSize,
-			Lease:        configuration.lease,
-			PollInterval: configuration.pollInterval,
-			BackoffBase:  configuration.backoffBase,
-			BackoffMax:   configuration.backoffMax,
+			Owner:         fmt.Sprintf("%s-%d", configuration.workerID, index),
+			BatchSize:     configuration.batchSize,
+			Lease:         configuration.lease,
+			PollInterval:  configuration.pollInterval,
+			BackoffBase:   configuration.backoffBase,
+			BackoffMax:    configuration.backoffMax,
+			PublishBudget: configuration.confirmTimeout,
 		}, metrics, logger)
 		if err != nil {
 			return err
@@ -115,35 +123,73 @@ func run(ctx context.Context, configuration config, logger *slog.Logger) error {
 		}
 	}()
 
-	healthBroker := brokers[0]
-	server := operationsServer(configuration.httpAddress, store, healthBroker, metrics)
+	server := operationsServer(configuration.httpAddress, store, readinessBrokers, metrics)
 	serverErrors := make(chan error, 1)
 	go func() {
 		logger.Info("outbox operations server listening", "address", configuration.httpAddress)
 		serverErrors <- server.ListenAndServe()
 	}()
-	workerErrors := make(chan error, len(workers))
+	workerContext, stopWorkers := context.WithCancel(ctx)
+	defer stopWorkers()
+	runners := make([]workerRunner, 0, len(workers))
 	for _, worker := range workers {
-		go func(worker *outbox.Worker) { workerErrors <- worker.Run(ctx) }(worker)
+		runners = append(runners, worker)
 	}
+	workerErrors, workerGroup := startWorkers(workerContext, runners)
 
+	var runError error
 	select {
 	case <-ctx.Done():
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("operations server: %w", err)
+			runError = fmt.Errorf("operations server: %w", err)
 		}
 	case err := <-workerErrors:
 		if !errors.Is(err, context.Canceled) {
-			return fmt.Errorf("publisher worker: %w", err)
+			runError = fmt.Errorf("publisher worker: %w", err)
 		}
 	}
+	stopWorkers()
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return server.Shutdown(shutdownContext)
+	shutdownError := server.Shutdown(shutdownContext)
+	if err := waitForWorkers(shutdownContext, workerGroup); err != nil {
+		for _, broker := range brokers {
+			_ = broker.Close()
+		}
+		return errors.Join(runError, shutdownError, errors.New("publisher workers did not stop before shutdown deadline"))
+	}
+	return errors.Join(runError, shutdownError)
 }
 
-func operationsServer(address string, store outbox.Store, broker outbox.Broker, metrics *outbox.Metrics) *http.Server {
+func startWorkers(ctx context.Context, workers []workerRunner) (<-chan error, *sync.WaitGroup) {
+	errorsChannel := make(chan error, len(workers))
+	group := &sync.WaitGroup{}
+	for _, worker := range workers {
+		group.Add(1)
+		go func(worker workerRunner) {
+			defer group.Done()
+			errorsChannel <- worker.Run(ctx)
+		}(worker)
+	}
+	return errorsChannel, group
+}
+
+func waitForWorkers(ctx context.Context, group *sync.WaitGroup) error {
+	done := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func operationsServer(address string, store outbox.Store, brokers []outbox.Broker, metrics *outbox.Metrics) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /livez", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
@@ -155,9 +201,15 @@ func operationsServer(address string, store outbox.Store, broker outbox.Broker, 
 			http.Error(writer, "outbox store unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		if err := broker.Ready(ctx); err != nil {
-			http.Error(writer, "RabbitMQ unavailable", http.StatusServiceUnavailable)
+		if len(brokers) == 0 {
+			http.Error(writer, "RabbitMQ capacity unavailable", http.StatusServiceUnavailable)
 			return
+		}
+		for _, broker := range brokers {
+			if err := broker.Ready(ctx); err != nil {
+				http.Error(writer, "RabbitMQ capacity unavailable", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
@@ -226,6 +278,9 @@ func loadConfig() (config, error) {
 	}
 	if configuration.backoffMax < configuration.backoffBase {
 		return config{}, errors.New("OUTBOX_BACKOFF_MAX must be at least OUTBOX_BACKOFF_BASE")
+	}
+	if configuration.lease < configuration.confirmTimeout+2*time.Second {
+		return config{}, errors.New("OUTBOX_LEASE must exceed OUTBOX_CONFIRM_TIMEOUT by at least 2s")
 	}
 	configuration.tlsConfig, err = loadRabbitTLS()
 	if err != nil {

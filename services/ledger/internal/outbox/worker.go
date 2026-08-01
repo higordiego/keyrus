@@ -17,13 +17,16 @@ import (
 )
 
 type WorkerConfig struct {
-	Owner        string
-	BatchSize    int
-	Lease        time.Duration
-	PollInterval time.Duration
-	BackoffBase  time.Duration
-	BackoffMax   time.Duration
+	Owner         string
+	BatchSize     int
+	Lease         time.Duration
+	PollInterval  time.Duration
+	BackoffBase   time.Duration
+	BackoffMax    time.Duration
+	PublishBudget time.Duration
 }
+
+const persistenceBudget = 2 * time.Second
 
 type Worker struct {
 	store    Store
@@ -49,7 +52,8 @@ func NewWorker(
 	}
 	if config.Owner == "" || config.BatchSize < 1 || config.Lease <= 0 ||
 		config.PollInterval <= 0 || config.BackoffBase <= 0 ||
-		config.BackoffMax < config.BackoffBase {
+		config.BackoffMax < config.BackoffBase || config.PublishBudget <= 0 ||
+		config.Lease <= config.PublishBudget+persistenceBudget {
 		return nil, errorsNew("invalid outbox worker configuration")
 	}
 	return &Worker{
@@ -88,20 +92,26 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) ProcessOnce(ctx context.Context) (int, error) {
-	events, err := w.store.Claim(ctx, w.config.Owner, w.config.BatchSize, w.config.Lease)
-	if err != nil {
-		w.metrics.RecordError()
-		return 0, err
-	}
-	for index, event := range events {
-		if err := w.publishOne(ctx, event); err != nil {
+	processed := 0
+	var publishErrors []error
+	for processed < w.config.BatchSize {
+		events, err := w.store.Claim(ctx, w.config.Owner, 1, w.config.Lease)
+		if err != nil {
+			w.metrics.RecordError()
+			return processed, errors.Join(append(publishErrors, err)...)
+		}
+		if len(events) == 0 {
+			break
+		}
+		processed++
+		if err := w.publishOne(ctx, events[0]); err != nil {
 			if errors.Is(err, ErrPublicationInterrupted) {
-				return index, err
+				return processed, errors.Join(append(publishErrors, err)...)
 			}
-			return index + 1, err
+			publishErrors = append(publishErrors, err)
 		}
 	}
-	return len(events), nil
+	return processed, errors.Join(publishErrors...)
 }
 
 func (w *Worker) publishOne(ctx context.Context, event Event) error {
@@ -118,10 +128,9 @@ func (w *Worker) publishOne(ctx context.Context, event Event) error {
 			return err
 		}
 		delay := w.retryDelay(event.Attempts)
-		releaseErr := w.store.MarkFailed(
-			ctx, event.EventID, event.LeaseOwner,
-			w.clock.Now().Add(delay), sanitizeError(err.Error()),
-		)
+		persistContext, cancel := context.WithTimeout(context.Background(), persistenceBudget)
+		releaseErr := w.store.MarkFailed(persistContext, event.EventID, event.LeaseOwner, delay, sanitizeError(err.Error()))
+		cancel()
 		if releaseErr != nil {
 			return errors.Join(err, releaseErr)
 		}
@@ -134,7 +143,10 @@ func (w *Worker) publishOne(ctx context.Context, event Event) error {
 		return err
 	}
 	confirmedAt := w.clock.Now()
-	if err := w.store.MarkPublished(ctx, event.EventID, event.LeaseOwner, confirmedAt); err != nil {
+	persistContext, cancel := context.WithTimeout(context.Background(), persistenceBudget)
+	err := w.store.MarkPublished(persistContext, event.EventID, event.LeaseOwner)
+	cancel()
+	if err != nil {
 		w.metrics.RecordError()
 		span.RecordError(err)
 		return fmt.Errorf("persist publisher confirm: %w", err)

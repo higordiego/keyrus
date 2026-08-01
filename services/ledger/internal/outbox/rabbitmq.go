@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -53,11 +54,13 @@ type RabbitConfig struct {
 }
 
 type RabbitBroker struct {
-	config  RabbitConfig
-	mu      sync.Mutex
-	conn    *amqp091.Connection
-	channel *amqp091.Channel
-	returns <-chan amqp091.Return
+	config   RabbitConfig
+	mu       sync.Mutex
+	socketMu sync.Mutex
+	socket   net.Conn
+	conn     *amqp091.Connection
+	channel  *amqp091.Channel
+	returns  <-chan amqp091.Return
 }
 
 func NewRabbitBroker(config RabbitConfig) (*RabbitBroker, error) {
@@ -89,6 +92,9 @@ func NewRabbitBroker(config RabbitConfig) (*RabbitBroker, error) {
 func (b *RabbitBroker) Publish(ctx context.Context, event Event) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if event.EventType != EventType {
 		return fmt.Errorf("unsupported event type %q", event.EventType)
 	}
@@ -99,7 +105,13 @@ func (b *RabbitBroker) Publish(ctx context.Context, event Event) error {
 	if err := b.config.Schema.Validate(instance); err != nil {
 		return fmt.Errorf("validate outbox payload: %w", err)
 	}
-	if err := b.ensureChannel(ctx); err != nil {
+	envelope, err := validateEnvelope(event)
+	if err != nil {
+		return err
+	}
+	publishContext, cancel := context.WithTimeout(ctx, b.config.ConfirmTimeout)
+	defer cancel()
+	if err := b.ensureChannel(publishContext); err != nil {
 		return err
 	}
 	for {
@@ -113,15 +125,31 @@ func (b *RabbitBroker) Publish(ctx context.Context, event Event) error {
 
 returnsDrained:
 
-	var envelope struct {
-		EntryID     string `json:"entry_id"`
-		Traceparent string `json:"traceparent"`
+	socket := b.activeSocket()
+	if socket == nil {
+		b.resetLocked()
+		return errorsNew("RabbitMQ socket is unavailable")
 	}
-	if err := json.Unmarshal(event.Payload, &envelope); err != nil {
-		return fmt.Errorf("decode event headers: %w", err)
+	deadline, _ := publishContext.Deadline()
+	if err := socket.SetDeadline(deadline); err != nil {
+		b.resetLocked()
+		return fmt.Errorf("set AMQP I/O deadline: %w", err)
 	}
-	publishContext, cancel := context.WithTimeout(ctx, b.config.ConfirmTimeout)
-	defer cancel()
+	stopDeadlineWatcher := make(chan struct{})
+	deadlineWatcherDone := make(chan struct{})
+	go func() {
+		defer close(deadlineWatcherDone)
+		select {
+		case <-publishContext.Done():
+			_ = socket.SetDeadline(time.Now())
+		case <-stopDeadlineWatcher:
+		}
+	}()
+	defer func() {
+		close(stopDeadlineWatcher)
+		<-deadlineWatcherDone
+		_ = socket.SetDeadline(time.Time{})
+	}()
 	confirmation, err := b.channel.PublishWithDeferredConfirmWithContext(
 		publishContext,
 		b.config.Topology.Exchange,
@@ -136,6 +164,8 @@ returnsDrained:
 				"merchant_position": event.MerchantPosition,
 				"entry_id":          envelope.EntryID,
 				"traceparent":       envelope.Traceparent,
+				"occurred_at":       event.OccurredAt.UTC().Format(time.RFC3339Nano),
+				"confirmed_at":      envelope.ConfirmedAt.UTC().Format(time.RFC3339Nano),
 			},
 			ContentType:   "application/json",
 			DeliveryMode:  amqp091.Persistent,
@@ -161,12 +191,21 @@ returnsDrained:
 			return err
 		}
 	}
-	select {
-	case <-publishContext.Done():
-		b.resetLocked()
-		return fmt.Errorf("wait for publisher confirm: %w", publishContext.Err())
-	case <-confirmation.Done():
+	for {
+		select {
+		case <-publishContext.Done():
+			b.resetLocked()
+			return fmt.Errorf("wait for publisher confirm: %w", publishContext.Err())
+		case returned := <-b.returns:
+			if returned.MessageId == event.EventID {
+				return ErrUnroutable
+			}
+		case <-confirmation.Done():
+			goto confirmed
+		}
 	}
+
+confirmed:
 	if !confirmation.Acked() {
 		return ErrNotConfirmed
 	}
@@ -183,6 +222,64 @@ returnsDrained:
 	}
 }
 
+type eventEnvelope struct {
+	EventID          string    `json:"event_id"`
+	EventType        string    `json:"event_type"`
+	OccurredAt       time.Time `json:"occurred_at"`
+	MerchantID       string    `json:"merchant_id"`
+	MerchantPosition int64     `json:"merchant_position"`
+	EntryID          string    `json:"entry_id"`
+	ConfirmedAt      time.Time `json:"confirmed_at"`
+	Traceparent      string    `json:"traceparent"`
+}
+
+func validateEnvelope(event Event) (eventEnvelope, error) {
+	var fields map[string]any
+	if err := json.Unmarshal(event.Payload, &fields); err != nil {
+		return eventEnvelope{}, fmt.Errorf("decode event envelope: %w", err)
+	}
+	if field := prohibitedField(fields); field != "" {
+		return eventEnvelope{}, fmt.Errorf("event payload contains prohibited sensitive field %q", field)
+	}
+	var envelope eventEnvelope
+	if err := json.Unmarshal(event.Payload, &envelope); err != nil {
+		return eventEnvelope{}, fmt.Errorf("decode typed event envelope: %w", err)
+	}
+	if envelope.EventID != event.EventID || envelope.EventType != event.EventType ||
+		envelope.MerchantID != event.MerchantID || envelope.MerchantPosition != event.MerchantPosition ||
+		envelope.EntryID != event.AggregateID || !envelope.OccurredAt.Equal(event.OccurredAt) ||
+		!envelope.ConfirmedAt.Equal(event.OccurredAt) {
+		return eventEnvelope{}, errorsNew("event payload identity does not match claimed outbox row")
+	}
+	return envelope, nil
+}
+
+var prohibitedPayloadFields = map[string]struct{}{
+	"authorization": {}, "card_number": {}, "credential": {}, "credentials": {},
+	"cvv": {}, "description": {}, "jwt": {}, "password": {}, "secret": {}, "token": {},
+}
+
+func prohibitedField(value any) string {
+	switch current := value.(type) {
+	case map[string]any:
+		for name, nested := range current {
+			if _, prohibited := prohibitedPayloadFields[strings.ToLower(name)]; prohibited {
+				return name
+			}
+			if found := prohibitedField(nested); found != "" {
+				return found
+			}
+		}
+	case []any:
+		for _, nested := range current {
+			if found := prohibitedField(nested); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
 func (b *RabbitBroker) Ready(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -197,14 +294,29 @@ func (b *RabbitBroker) ensureChannel(ctx context.Context) error {
 		return nil
 	}
 	b.resetLocked()
+	connectTimeout := 5 * time.Second
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < connectTimeout {
+		connectTimeout = time.Until(deadline)
+	}
+	if connectTimeout <= 0 {
+		return context.DeadlineExceeded
+	}
+	defaultDial := amqp091.DefaultDial(connectTimeout)
 	amqpConfig := amqp091.Config{
 		Heartbeat:       10 * time.Second,
 		Locale:          "en_US",
 		TLSClientConfig: b.config.TLS.Clone(),
-		Dial:            amqp091.DefaultDial(5 * time.Second),
+		Dial: func(network, address string) (net.Conn, error) {
+			socket, err := defaultDial(network, address)
+			if err == nil {
+				b.setActiveSocket(socket)
+			}
+			return socket, err
+		},
 	}
 	conn, err := amqp091.DialConfig(b.config.URL, amqpConfig)
 	if err != nil {
+		b.setActiveSocket(nil)
 		return fmt.Errorf("connect RabbitMQ: %w", err)
 	}
 	channel, err := conn.Channel()
@@ -239,6 +351,8 @@ func declareTopology(channel *amqp091.Channel, topology Topology) error {
 		"x-queue-type":              "quorum",
 		"x-dead-letter-exchange":    topology.DLX,
 		"x-dead-letter-routing-key": topology.RoutingKey,
+		"x-dead-letter-strategy":    "at-least-once",
+		"x-overflow":                "reject-publish",
 	}
 	if _, err := channel.QueueDeclare(topology.Queue, true, false, false, false, queueArguments); err != nil {
 		return fmt.Errorf("declare consolidation queue: %w", err)
@@ -256,6 +370,7 @@ func declareTopology(channel *amqp091.Channel, topology Topology) error {
 }
 
 func (b *RabbitBroker) Close() error {
+	b.interruptSocket()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var result error
@@ -269,6 +384,7 @@ func (b *RabbitBroker) Close() error {
 	}
 	b.channel = nil
 	b.conn = nil
+	b.setActiveSocket(nil)
 	return result
 }
 
@@ -282,4 +398,26 @@ func (b *RabbitBroker) resetLocked() {
 	b.channel = nil
 	b.conn = nil
 	b.returns = nil
+	b.setActiveSocket(nil)
+}
+
+func (b *RabbitBroker) activeSocket() net.Conn {
+	b.socketMu.Lock()
+	defer b.socketMu.Unlock()
+	return b.socket
+}
+
+func (b *RabbitBroker) setActiveSocket(socket net.Conn) {
+	b.socketMu.Lock()
+	b.socket = socket
+	b.socketMu.Unlock()
+}
+
+func (b *RabbitBroker) interruptSocket() {
+	b.socketMu.Lock()
+	defer b.socketMu.Unlock()
+	if b.socket != nil {
+		_ = b.socket.SetDeadline(time.Now())
+		_ = b.socket.Close()
+	}
 }
