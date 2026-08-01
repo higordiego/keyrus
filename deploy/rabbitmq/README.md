@@ -5,7 +5,7 @@ The publisher declares this topology idempotently on its dedicated virtual host:
 | Resource | Name | Properties |
 | --- | --- | --- |
 | Topic exchange | `ledger.events` | durable |
-| Consolidation queue | `consolidation.ledger-entry-confirmed.v1` | durable quorum queue |
+| Consolidation queue | `consolidation.ledger-entry-confirmed.v1` | durable quorum queue; dead-letter `at-least-once`; overflow `reject-publish` |
 | Binding key | `ledger.entry.confirmed.v1` | exchange to queue |
 | Dead-letter exchange | `ledger.events.dlx` | durable topic exchange |
 | Dead-letter queue | `consolidation.ledger-entry-confirmed.v1.dlq` | durable quorum queue |
@@ -19,3 +19,7 @@ explicit insecure-development switch is enabled.
 Messages use delivery mode `persistent`, routing key and type
 `ledger.entry.confirmed.v1`, and carry stable `event_id`, `entry_id`, merchant
 position, and W3C `traceparent` headers. Free-form description is never present.
+The publisher rejects nested fields named `description`, credentials, secrets,
+tokens, authorization data, card numbers, or CVV before sending, and verifies
+that body identity and timestamps match the claimed outbox row and AMQP
+properties.

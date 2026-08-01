@@ -30,6 +30,7 @@ type Event struct {
 	CreatedAt        time.Time
 	Attempts         int
 	LeaseOwner       string
+	LeaseUntil       time.Time
 }
 
 type Stats struct {
@@ -39,8 +40,8 @@ type Stats struct {
 
 type Store interface {
 	Claim(context.Context, string, int, time.Duration) ([]Event, error)
-	MarkPublished(context.Context, string, string, time.Time) error
-	MarkFailed(context.Context, string, string, time.Time, string) error
+	MarkPublished(context.Context, string, string) error
+	MarkFailed(context.Context, string, string, time.Duration, string) error
 	Ready(context.Context) error
 	Stats(context.Context, time.Time) (Stats, error)
 }

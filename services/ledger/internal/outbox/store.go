@@ -56,7 +56,7 @@ WHERE event.event_id = claimable.event_id
 RETURNING event.event_id, event.aggregate_id, event.merchant_id,
           event.merchant_position, event.event_type, event.payload,
           event.occurred_at, event.created_at, event.attempts,
-          event.lease_owner`, limit, owner, lease.String())
+          event.lease_owner, event.lease_until`, limit, owner, lease.String())
 	if err != nil {
 		return nil, fmt.Errorf("claim outbox events: %w", err)
 	}
@@ -68,7 +68,7 @@ RETURNING event.event_id, event.aggregate_id, event.merchant_id,
 			&event.EventID, &event.AggregateID, &event.MerchantID,
 			&event.MerchantPosition, &event.EventType, &event.Payload,
 			&event.OccurredAt, &event.CreatedAt, &event.Attempts,
-			&event.LeaseOwner,
+			&event.LeaseOwner, &event.LeaseUntil,
 		); err != nil {
 			return nil, fmt.Errorf("scan claimed outbox event: %w", err)
 		}
@@ -86,17 +86,16 @@ RETURNING event.event_id, event.aggregate_id, event.merchant_id,
 func (s *PostgresStore) MarkPublished(
 	ctx context.Context,
 	eventID, owner string,
-	publishedAt time.Time,
 ) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE ledger.outbox_event
-SET published_at = $3,
+SET published_at = clock_timestamp(),
     lease_owner = NULL,
     lease_until = NULL,
     last_error = NULL
 WHERE event_id = $1
   AND lease_owner = $2
-  AND published_at IS NULL`, eventID, owner, publishedAt)
+  AND published_at IS NULL`, eventID, owner)
 	if err != nil {
 		return fmt.Errorf("mark outbox published: %w", err)
 	}
@@ -109,18 +108,21 @@ WHERE event_id = $1
 func (s *PostgresStore) MarkFailed(
 	ctx context.Context,
 	eventID, owner string,
-	availableAt time.Time,
+	delay time.Duration,
 	lastError string,
 ) error {
+	if delay < 0 {
+		return errorsNew("outbox retry delay must not be negative")
+	}
 	tag, err := s.pool.Exec(ctx, `
 UPDATE ledger.outbox_event
-SET available_at = $3,
+SET available_at = clock_timestamp() + $3::interval,
     lease_owner = NULL,
     lease_until = NULL,
     last_error = LEFT($4, 500)
 WHERE event_id = $1
   AND lease_owner = $2
-  AND published_at IS NULL`, eventID, owner, availableAt, sanitizeError(lastError))
+  AND published_at IS NULL`, eventID, owner, delay.String(), sanitizeError(lastError))
 	if err != nil {
 		return fmt.Errorf("release failed outbox event: %w", err)
 	}
@@ -136,6 +138,10 @@ func (s *PostgresStore) Ready(ctx context.Context) error {
 SELECT has_schema_privilege(current_user, 'ledger', 'USAGE')
    AND has_table_privilege(current_user, 'ledger.outbox_event', 'SELECT')
    AND has_column_privilege(current_user, 'ledger.outbox_event', 'lease_owner', 'UPDATE')
+   AND has_column_privilege(current_user, 'ledger.outbox_event', 'lease_until', 'UPDATE')
+   AND has_column_privilege(current_user, 'ledger.outbox_event', 'attempts', 'UPDATE')
+   AND has_column_privilege(current_user, 'ledger.outbox_event', 'last_error', 'UPDATE')
+   AND has_column_privilege(current_user, 'ledger.outbox_event', 'available_at', 'UPDATE')
    AND has_column_privilege(current_user, 'ledger.outbox_event', 'published_at', 'UPDATE')`).Scan(&writable); err != nil {
 		return fmt.Errorf("probe outbox store: %w", err)
 	}
@@ -145,14 +151,14 @@ SELECT has_schema_privilege(current_user, 'ledger', 'USAGE')
 	return nil
 }
 
-func (s *PostgresStore) Stats(ctx context.Context, now time.Time) (Stats, error) {
+func (s *PostgresStore) Stats(ctx context.Context, _ time.Time) (Stats, error) {
 	var stats Stats
 	var oldestSeconds float64
 	if err := s.pool.QueryRow(ctx, `
 SELECT count(*),
-       COALESCE(EXTRACT(EPOCH FROM ($1::timestamptz - min(created_at))), 0)
+       COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - min(created_at))), 0)
 FROM ledger.outbox_event
-WHERE published_at IS NULL`, now).Scan(&stats.Pending, &oldestSeconds); err != nil {
+WHERE published_at IS NULL`).Scan(&stats.Pending, &oldestSeconds); err != nil {
 		return Stats{}, fmt.Errorf("read outbox stats: %w", err)
 	}
 	if oldestSeconds > 0 {

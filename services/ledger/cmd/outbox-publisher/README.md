@@ -16,3 +16,11 @@ Optional TLS inputs are `OUTBOX_RABBITMQ_CA_FILE`,
 are exposed on `OUTBOX_HTTP_ADDRESS` (default `:8080`) at `/livez`, `/readyz`,
 and `/metrics`. Readiness belongs to this publisher and includes PostgreSQL and
 RabbitMQ; it is never consulted by Ledger API readiness.
+
+Each worker owns one RabbitMQ connection. Publisher readiness is deliberately
+fail-closed: PostgreSQL must have every `SELECT`/`UPDATE` privilege used by the
+claim, retry, and confirm paths, and every configured worker broker must be
+ready. Partial broker capacity therefore returns `503`. The lease must exceed
+the confirm timeout by at least two seconds; because workers claim one event at a
+time, that budget covers the only leased item in flight. Shutdown cancels AMQP
+I/O and waits up to ten seconds for every worker to join.

@@ -2,5 +2,4 @@
 # Adding a tag without a real binding makes the strict Godog suite fail.
 @SCN-RNF01-002
 @SCN-RNF01-004
-@SCN-RNF02-002
 @SCN-RNF09-006
