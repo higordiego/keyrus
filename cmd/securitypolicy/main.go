@@ -9,12 +9,20 @@ import (
 )
 
 type report struct {
-	Results []result `json:"Results"`
+	SchemaVersion int      `json:"SchemaVersion"`
+	Results       []result `json:"Results"`
 }
 
 type result struct {
-	Target          string          `json:"Target"`
-	Vulnerabilities []vulnerability `json:"Vulnerabilities"`
+	Target            string             `json:"Target"`
+	Vulnerabilities   []vulnerability    `json:"Vulnerabilities"`
+	Misconfigurations []misconfiguration `json:"Misconfigurations"`
+}
+
+type misconfiguration struct {
+	ID       string `json:"ID"`
+	Title    string `json:"Title"`
+	Severity string `json:"Severity"`
 }
 
 type vulnerability struct {
@@ -43,6 +51,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "parse Trivy report: %v\n", err)
 		os.Exit(2)
 	}
+	if scan.SchemaVersion <= 0 {
+		fmt.Fprintln(os.Stderr, "parse Trivy report: missing positive SchemaVersion")
+		os.Exit(2)
+	}
 
 	blocked := 0
 	for _, result := range scan.Results {
@@ -58,9 +70,18 @@ func main() {
 			fmt.Fprintf(os.Stderr, "blocking vulnerability %s severity %s package %s target %s fixed in %s\n",
 				finding.ID, severity, finding.Package, result.Target, finding.FixedVersion)
 		}
+		for _, finding := range result.Misconfigurations {
+			severity := strings.ToUpper(finding.Severity)
+			if severity != "CRITICAL" {
+				continue
+			}
+			blocked++
+			fmt.Fprintf(os.Stderr, "blocking misconfiguration %s severity %s target %s title %s\n",
+				finding.ID, severity, result.Target, finding.Title)
+		}
 	}
 	if blocked > 0 {
 		os.Exit(1)
 	}
-	fmt.Println("no blocking HIGH/CRITICAL vulnerability with an available fix")
+	fmt.Println("no blocking HIGH/CRITICAL vulnerability with a fix or CRITICAL misconfiguration")
 }

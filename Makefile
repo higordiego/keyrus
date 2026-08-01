@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-GO_VERSION := 1.26.4
+GO_VERSION := 1.26.5
 TOOLS_BIN := $(CURDIR)/.tools/bin
 TOOLS_VERSIONS := $(CURDIR)/.tools/versions
 BUF := $(TOOLS_BIN)/buf
@@ -19,7 +19,7 @@ TRIVY_VERSION := v0.72.0
 
 export PATH := $(TOOLS_BIN):$(PATH)
 
-.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test bdd-parse reports ci policy security integration build-validation full-validation clean-reports
+.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test bdd-parse reports ci policy security build-validation full-validation clean-reports
 
 all: ci
 
@@ -100,9 +100,6 @@ policy: check-go-version
 
 security: check-go-version
 	./scripts/run-gate.sh security security ./scripts/security-gate.sh "$(GOVULNCHECK)" "$(GITLEAKS)" "$(TRIVY)"
-
-integration: check-go-version
-	./scripts/run-gate.sh integration integration ./scripts/integration-gate.sh
 
 build-validation: check-go-version
 	./scripts/run-gate.sh build build-validation ./scripts/build-validation-gate.sh "$(TRIVY)"

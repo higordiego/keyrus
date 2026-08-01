@@ -38,7 +38,7 @@ jobs:
       - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         if: matrix.language == 'go-kotlin'
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
           cache: true
       - name: Initialize CodeQL
         uses: github/codeql-action/init@47be0dbd5113ab1b79fe2dd3f68bdf7e426cdc87 # v3

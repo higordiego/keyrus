@@ -1,0 +1,12 @@
+name: controlled-write-all-fixture
+on: push
+permissions: write-all
+concurrency:
+  group: controlled-fixture
+  cancel-in-progress: true
+jobs:
+  reject-me:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: go version

@@ -1,0 +1,16 @@
+name: controlled-unauthorized-write-fixture
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: controlled-fixture
+  cancel-in-progress: true
+jobs:
+  source-security:
+    permissions:
+      contents: read
+      security-events: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: go version

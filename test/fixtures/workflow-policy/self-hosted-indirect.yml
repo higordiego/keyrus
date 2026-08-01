@@ -1,0 +1,16 @@
+name: controlled-indirect-runner-fixture
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: controlled-fixture
+  cancel-in-progress: true
+jobs:
+  reject-me:
+    strategy:
+      matrix:
+        runner: [self-hosted]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 1
+    steps:
+      - run: go version
