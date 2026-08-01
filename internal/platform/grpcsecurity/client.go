@@ -32,6 +32,9 @@ func UnaryClientInterceptor(config ClientConfig) (grpc.UnaryClientInterceptor, e
 		return nil, errors.New("grpcsecurity: token source is required")
 	}
 	deadline := config.Deadline
+	if deadline < 0 {
+		return nil, errors.New("grpcsecurity: deadline cannot be negative")
+	}
 	if deadline == 0 {
 		deadline = DefaultMaxDeadline
 	}
@@ -52,6 +55,9 @@ func StreamClientInterceptor(config ClientConfig) (grpc.StreamClientInterceptor,
 		return nil, errors.New("grpcsecurity: token source is required")
 	}
 	deadline := config.Deadline
+	if deadline < 0 {
+		return nil, errors.New("grpcsecurity: deadline cannot be negative")
+	}
 	if deadline == 0 {
 		deadline = DefaultMaxDeadline
 	}
@@ -92,12 +98,14 @@ func (s cancellingStream) CloseSend() error {
 }
 
 func prepare(ctx context.Context, tokens TokenSource, deadline time.Duration) (context.Context, context.CancelFunc, error) {
-	token, err := tokens.Token(ctx)
+	budget, cancel := sharedBudget(ctx, deadline)
+	token, err := tokens.Token(budget)
 	if err != nil {
+		cancel()
 		return nil, func() {}, err
 	}
 
-	outgoing, present := metadata.FromOutgoingContext(ctx)
+	outgoing, present := metadata.FromOutgoingContext(budget)
 	if present {
 		outgoing = outgoing.Copy()
 	} else {
@@ -105,19 +113,26 @@ func prepare(ctx context.Context, tokens TokenSource, deadline time.Duration) (c
 	}
 	outgoing.Set(authorizationMetadataKey, "Bearer "+token)
 
-	if span, ok := TraceParentFrom(ctx); ok {
+	if span, state, ok := tracecontext.FromContext(budget); ok {
 		outgoing.Set(tracecontext.TraceParentHeader, span.String())
-		if state := incomingTraceState(ctx); state != "" {
+		if state != "" {
+			outgoing.Set(tracecontext.TraceStateHeader, state)
+		}
+	} else if span, ok := TraceParentFrom(budget); ok {
+		outgoing.Set(tracecontext.TraceParentHeader, span.String())
+		if state := incomingTraceState(budget); state != "" {
 			outgoing.Set(tracecontext.TraceStateHeader, state)
 		}
 	}
 
-	prepared := metadata.NewOutgoingContext(ctx, outgoing)
-	if _, hasDeadline := prepared.Deadline(); hasDeadline {
-		return prepared, func() {}, nil
+	return metadata.NewOutgoingContext(budget, outgoing), cancel, nil
+}
+
+func sharedBudget(ctx context.Context, maximum time.Duration) (context.Context, context.CancelFunc) {
+	if current, present := ctx.Deadline(); present && time.Until(current) <= maximum {
+		return ctx, func() {}
 	}
-	bounded, cancel := context.WithTimeout(prepared, deadline)
-	return bounded, cancel, nil
+	return context.WithTimeout(ctx, maximum)
 }
 
 func incomingTraceState(ctx context.Context) string {

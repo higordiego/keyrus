@@ -14,11 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/higordiegoti/keyrus/internal/platform/auth"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 const (
@@ -33,118 +28,28 @@ type tokenResponse struct {
 	TokenType   string `json:"token_type"`
 }
 
-// TestKeycloakRealmWithRealIssuer imports the versioned realm into a real,
-// pinned Keycloak container. It proves that service credentials, scopes,
-// audiences, issuer and JWKS interoperate with the production Go verifier.
-func TestKeycloakRealmWithRealIssuer(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	consolidationSecret := randomCredential(t)
-	reconciliationSecret := randomCredential(t)
-	realmPath := renderRealm(t, map[string]string{
-		"CASHFLOW_CONSOLIDATION_CLIENT_SECRET":  consolidationSecret,
-		"CASHFLOW_RECONCILIATION_CLIENT_SECRET": reconciliationSecret,
-		"CASHFLOW_MERCHANT_A_PASSWORD":          randomCredential(t),
-		"CASHFLOW_MERCHANT_B_PASSWORD":          randomCredential(t),
-	})
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        keycloakImage,
-			ExposedPorts: []string{"8080/tcp"},
-			Env: map[string]string{
-				"KC_BOOTSTRAP_ADMIN_USERNAME": "integration-admin",
-				"KC_BOOTSTRAP_ADMIN_PASSWORD": randomCredential(t),
-				"KC_HEALTH_ENABLED":           "true",
-				"KC_METRICS_ENABLED":          "true",
-			},
-			Cmd: []string{"start-dev", "--import-realm", "--hostname-strict=false"},
-			Files: []testcontainers.ContainerFile{{
-				HostFilePath:      realmPath,
-				ContainerFilePath: "/opt/keycloak/data/import/realm-cashflow.json",
-				FileMode:          0o644,
-			}},
-			WaitingFor: wait.ForHTTP("/realms/cashflow/.well-known/openid-configuration").
-				WithPort("8080/tcp").
-				WithStartupTimeout(2 * time.Minute),
-		},
-		Started: true,
-	})
-	if err != nil {
-		t.Fatalf("start real Keycloak %s: %v", keycloakImage, err)
-	}
-	testcontainers.CleanupContainer(t, container)
-
-	baseURL, err := container.PortEndpoint(ctx, "8080/tcp", "http")
-	if err != nil {
-		t.Fatalf("resolve Keycloak endpoint: %v", err)
-	}
-
-	discovery := fetchDiscovery(t, ctx, baseURL)
-	if discovery.Issuer != keycloakIssuer {
-		t.Fatalf("discovery issuer: got %q, want %q", discovery.Issuer, keycloakIssuer)
-	}
-
-	keys, err := auth.NewJWKSCache(auth.JWKSConfig{
-		Endpoint: baseURL + "/realms/cashflow/protocol/openid-connect/certs",
-		Client:   &http.Client{Timeout: 5 * time.Second},
-	})
-	if err != nil {
-		t.Fatalf("configure production JWKS cache: %v", err)
-	}
-	internalVerifier, err := auth.NewVerifier(auth.VerifierConfig{
-		Issuer:   keycloakIssuer,
-		Audience: internalAudience,
-		Keys:     keys,
-		Merchant: auth.MerchantForbidden,
-	})
-	if err != nil {
-		t.Fatalf("configure internal verifier: %v", err)
-	}
-
-	consolidationToken := requestClientToken(t, ctx, baseURL, consolidationClient, consolidationSecret)
-	identity, err := internalVerifier.Verify(ctx, consolidationToken)
-	if err != nil {
-		t.Fatalf("verify real consolidation service token: %v", err)
-	}
-	if identity.MerchantID != "" {
-		t.Fatalf("service token unexpectedly contains merchant %q", identity.MerchantID)
-	}
-	if !identity.Scopes.Has(auth.ScopeLedgerInternal) {
-		t.Fatalf("consolidation token scopes %v omit %q", identity.Scopes.Sorted(), auth.ScopeLedgerInternal)
-	}
-	if identity.Scopes.Has(auth.ScopeOpsReconcile) {
-		t.Fatalf("consolidation token was over-privileged with %q", auth.ScopeOpsReconcile)
-	}
-
-	reconciliationToken := requestClientToken(t, ctx, baseURL, reconciliationClient, reconciliationSecret)
-	reconciliationIdentity, err := internalVerifier.Verify(ctx, reconciliationToken)
-	if err != nil {
-		t.Fatalf("verify real reconciliation service token: %v", err)
-	}
-	if !reconciliationIdentity.Scopes.HasAll(auth.ScopeLedgerInternal, auth.ScopeOpsReconcile) {
-		t.Fatalf("reconciliation token scopes %v omit the required minimum", reconciliationIdentity.Scopes.Sorted())
-	}
-
-	publicVerifier, err := auth.NewVerifier(auth.VerifierConfig{
-		Issuer:   keycloakIssuer,
-		Audience: publicAudience,
-		Keys:     keys,
-		Merchant: auth.MerchantRequired,
-	})
-	if err != nil {
-		t.Fatalf("configure public verifier: %v", err)
-	}
-	if _, err := publicVerifier.Verify(ctx, consolidationToken); !errors.Is(err, auth.ErrAudienceMismatch) {
-		t.Fatalf("internal token replayed on public audience: got %v, want %v", err, auth.ErrAudienceMismatch)
-	}
-}
-
 func renderRealm(t *testing.T, secrets map[string]string) string {
 	t.Helper()
 	temporary := t.TempDir()
 	output := filepath.Join(temporary, "realm-cashflow.json")
+	renderRealmAt(t, output, secrets)
+	return output
+}
+
+func configurePublicDockerBuild(t *testing.T, temporary string) {
+	t.Helper()
+	dockerConfig := filepath.Join(temporary, "docker-config")
+	if err := os.MkdirAll(dockerConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dockerConfig, "config.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", dockerConfig)
+}
+
+func renderRealmAt(t *testing.T, output string, secrets map[string]string) {
+	t.Helper()
 	script := filepath.Join("..", "..", "deploy", "identity", "keycloak", "render-realm.sh")
 
 	command := exec.Command(script, output)
@@ -175,7 +80,6 @@ func renderRealm(t *testing.T, secrets map[string]string) string {
 			t.Fatalf("rendered realm does not contain injected value for %s", name)
 		}
 	}
-	return output
 }
 
 func randomCredential(t *testing.T) string {
@@ -268,5 +172,35 @@ func TestRealmRendererTreatsShellSyntaxAsData(t *testing.T) {
 	}
 	if !strings.Contains(string(contents), malicious) {
 		t.Fatal("shell-like secret content was not preserved as inert data")
+	}
+}
+
+func TestRealmRendererAtomicallyReplacesExistingPermissiveFile(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "realm-cashflow.json")
+	if err := os.WriteFile(output, []byte("stale secret"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	secrets := map[string]string{
+		"CASHFLOW_CONSOLIDATION_CLIENT_SECRET":  "replacement-consolidation",
+		"CASHFLOW_RECONCILIATION_CLIENT_SECRET": "replacement-reconciliation",
+		"CASHFLOW_MERCHANT_A_PASSWORD":          "replacement-a",
+		"CASHFLOW_MERCHANT_B_PASSWORD":          "replacement-b",
+	}
+
+	renderRealmAt(t, output, secrets)
+
+	info, err := os.Stat(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permissions := info.Mode().Perm(); permissions != 0o600 {
+		t.Fatalf("replaced realm permissions: got %o, want 600", permissions)
+	}
+	contents, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), "stale secret") {
+		t.Fatal("existing realm contents survived replacement")
 	}
 }

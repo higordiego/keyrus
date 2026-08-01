@@ -1,21 +1,9 @@
 # One @SCN-* tag per line. Only tags in this manifest are executed by Godog.
 # Adding a tag without a real binding makes the strict Godog suite fail.
 #
-# T02 implements the edge, identity and security scenarios. Every other tag in
-# the catalogue remains an approved specification, not an executed test.
-
-# RNF-06 — authentication and tenant isolation
-@SCN-RNF06-001
-@SCN-RNF06-002
-@SCN-RNF06-003
-
-# RNF-08 — public edge with KrakenD Community
-@SCN-RNF08-002
-@SCN-RNF08-003
-@SCN-RNF08-004
-@SCN-RNF08-005
-@SCN-RNF08-008
-@SCN-RNF08-009
-
-# RNF-09 — common aspects of the internal gRPC contract
-@SCN-RNF09-004
+# T02's previous bindings used in-process substitutes for KrakenD, Keycloak and
+# the protected adapters. They remain useful unit/contract fixtures, but are no
+# longer presented as implemented BDD evidence. The same security properties
+# are exercised against the real containerized runtime in
+# test/integration/runtime_e2e_test.go. A scenario may return to this manifest
+# only when its Godog binding drives that real runtime.

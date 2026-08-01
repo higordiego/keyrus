@@ -4,6 +4,7 @@
 package tracecontext
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -30,6 +31,32 @@ type SpanContext struct {
 	TraceID string
 	SpanID  string
 	Flags   string
+}
+
+type carrierContextKey struct{}
+
+type carrier struct {
+	span  SpanContext
+	state string
+}
+
+// WithCarrier stores a validated traceparent and sanitized tracestate in a
+// transport-neutral context. HTTP middleware and gRPC interceptors use the same
+// carrier, so an HTTP adapter can call gRPC without manufacturing gRPC metadata.
+func WithCarrier(ctx context.Context, span SpanContext, state string) context.Context {
+	return context.WithValue(ctx, carrierContextKey{}, carrier{span: span, state: SanitizeTraceState(state)})
+}
+
+// FromContext returns the transport-neutral trace carrier.
+func FromContext(ctx context.Context) (SpanContext, string, bool) {
+	value, ok := ctx.Value(carrierContextKey{}).(carrier)
+	if !ok {
+		return SpanContext{}, "", false
+	}
+	if _, err := ParseTraceParent(value.span.String()); err != nil {
+		return SpanContext{}, "", false
+	}
+	return value.span, value.state, true
 }
 
 // String renders the version 00 traceparent form.

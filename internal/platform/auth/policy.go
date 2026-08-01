@@ -47,7 +47,7 @@ func PublicEdgePolicy() ScopePolicy {
 func InternalGRPCPolicy() ScopePolicy {
 	return ScopePolicy{
 		OperationGetWatermark:       {ScopeLedgerInternal},
-		OperationStreamEntriesAtCut: {ScopeLedgerInternal},
+		OperationStreamEntriesAtCut: {ScopeLedgerInternal, ScopeOpsReconcile},
 	}
 }
 

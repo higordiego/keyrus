@@ -4,7 +4,9 @@
 package httpauth
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -67,8 +69,11 @@ func Middleware(config Config) (func(http.Handler) http.Handler, error) {
 			for _, header := range untrustedHeaders {
 				request.Header.Del(header)
 			}
-			normalizeTraceContext(request)
-			request.Body = http.MaxBytesReader(writer, request.Body, maxBody)
+			request = normalizeTraceContext(request)
+			if request.ContentLength > maxBody {
+				writeTooLarge(writer)
+				return
+			}
 
 			token, err := bearerToken(request.Header.Get("Authorization"))
 			if err != nil {
@@ -85,6 +90,11 @@ func Middleware(config Config) (func(http.Handler) http.Handler, error) {
 				writeForbidden(writer)
 				return
 			}
+			if err := bufferBoundedBody(request, maxBody); err != nil {
+				writeTooLarge(writer)
+				return
+			}
+			writer.Header().Set(tracecontext.TraceParentHeader, request.Header.Get(tracecontext.TraceParentHeader))
 
 			next.ServeHTTP(writer, request.WithContext(auth.WithIdentity(request.Context(), identity)))
 		})
@@ -93,21 +103,43 @@ func Middleware(config Config) (func(http.Handler) http.Handler, error) {
 
 // normalizeTraceContext keeps a valid caller trace identity and replaces an
 // invalid one, so the correlation chain never carries attacker chosen values.
-func normalizeTraceContext(request *http.Request) {
+func normalizeTraceContext(request *http.Request) *http.Request {
 	span, _, err := tracecontext.EnsureTraceParent(request.Header.Get(tracecontext.TraceParentHeader))
 	if err != nil {
 		request.Header.Del(tracecontext.TraceParentHeader)
 		request.Header.Del(tracecontext.TraceStateHeader)
-		return
+		return request
 	}
 	request.Header.Set(tracecontext.TraceParentHeader, span.String())
 
 	state := tracecontext.SanitizeTraceState(request.Header.Get(tracecontext.TraceStateHeader))
 	if state == "" {
 		request.Header.Del(tracecontext.TraceStateHeader)
-		return
+	} else {
+		request.Header.Set(tracecontext.TraceStateHeader, state)
 	}
-	request.Header.Set(tracecontext.TraceStateHeader, state)
+	return request.WithContext(tracecontext.WithCarrier(request.Context(), span, state))
+}
+
+func bufferBoundedBody(request *http.Request, maxBody int64) error {
+	if request.Body == nil || request.Body == http.NoBody {
+		return nil
+	}
+	original := request.Body
+	contents, err := io.ReadAll(io.LimitReader(original, maxBody+1))
+	closeErr := original.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if int64(len(contents)) > maxBody {
+		return io.ErrShortBuffer
+	}
+	request.Body = io.NopCloser(bytes.NewReader(contents))
+	request.ContentLength = int64(len(contents))
+	return nil
 }
 
 func bearerToken(header string) (string, error) {
@@ -131,6 +163,10 @@ func writeUnauthenticated(writer http.ResponseWriter) {
 
 func writeForbidden(writer http.ResponseWriter) {
 	writeProblem(writer, http.StatusForbidden, "forbidden", "The authenticated identity is not allowed to perform this operation.")
+}
+
+func writeTooLarge(writer http.ResponseWriter) {
+	writeProblem(writer, http.StatusRequestEntityTooLarge, "request_too_large", "The request body exceeds the allowed size.")
 }
 
 // WriteResourceUnavailable emits the single response used both for a resource

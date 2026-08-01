@@ -23,6 +23,8 @@ type jwksServer struct {
 	mu       sync.Mutex
 	keys     map[string]*rsa.PublicKey
 	failing  bool
+	block    <-chan struct{}
+	started  chan<- struct{}
 	requests atomic.Int64
 	server   *httptest.Server
 }
@@ -38,8 +40,17 @@ func newJWKSServer(t *testing.T, initial map[string]*rsa.PublicKey) *jwksServer 
 func (s *jwksServer) serve(writer http.ResponseWriter, _ *http.Request) {
 	s.requests.Add(1)
 	s.mu.Lock()
-	failing, keys := s.failing, s.keys
+	failing, keys, block, started := s.failing, s.keys, s.block, s.started
 	s.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if block != nil {
+		<-block
+	}
 
 	if failing {
 		writer.WriteHeader(http.StatusServiceUnavailable)
@@ -70,6 +81,13 @@ func (s *jwksServer) setFailing(failing bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failing = failing
+}
+
+func (s *jwksServer) setBlocking(block <-chan struct{}, started chan<- struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.block = block
+	s.started = started
 }
 
 func generateKey(t *testing.T) *rsa.PrivateKey {
@@ -178,6 +196,53 @@ func TestJWKSCacheKeepsServingCachedKeysWhileTheProviderIsDown(t *testing.T) {
 	now = now.Add(30 * time.Minute)
 	if _, err := cache.VerificationKey(context.Background(), "first"); err == nil {
 		t.Fatal("a cached key was served past its stale tolerance")
+	}
+}
+
+func TestJWKSCacheKnownHitDoesNotWaitForConcurrentRemoteRefresh(t *testing.T) {
+	t.Parallel()
+	key := generateKey(t)
+	publisher := newJWKSServer(t, map[string]*rsa.PublicKey{"first": &key.PublicKey})
+
+	var nowNanos atomic.Int64
+	nowNanos.Store(time.Now().UnixNano())
+	cache, err := auth.NewJWKSCache(auth.JWKSConfig{
+		Endpoint:           publisher.server.URL,
+		RefreshInterval:    time.Minute,
+		MinRefreshInterval: time.Nanosecond,
+		StaleTolerance:     10 * time.Minute,
+		Now:                func() time.Time { return time.Unix(0, nowNanos.Load()) },
+	})
+	if err != nil {
+		t.Fatalf("create cache: %v", err)
+	}
+	if _, err := cache.VerificationKey(context.Background(), "first"); err != nil {
+		t.Fatalf("warm cache: %v", err)
+	}
+
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	publisher.setBlocking(release, started)
+	nowNanos.Add(int64(2 * time.Minute))
+	unknownDone := make(chan error, 1)
+	go func() {
+		_, err := cache.VerificationKey(context.Background(), "forged")
+		unknownDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("remote refresh did not start")
+	}
+
+	deadline, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := cache.VerificationKey(deadline, "first"); err != nil {
+		t.Fatalf("known cached key waited behind remote refresh: %v", err)
+	}
+	close(release)
+	if err := <-unknownDone; err == nil {
+		t.Fatal("forged key unexpectedly resolved")
 	}
 }
 

@@ -52,10 +52,12 @@ type JWKSCache struct {
 	staleTolerance  time.Duration
 	now             func() time.Time
 
-	mu          sync.Mutex
-	keys        map[string]*rsa.PublicKey
-	fetchedAt   time.Time
-	lastAttempt time.Time
+	mu               sync.RWMutex
+	keys             map[string]*rsa.PublicKey
+	fetchedAt        time.Time
+	lastAttempt      time.Time
+	refreshDone      chan struct{}
+	lastRefreshError error
 }
 
 // NewJWKSCache fails closed when the endpoint is absent.
@@ -92,40 +94,99 @@ func NewJWKSCache(config JWKSConfig) (*JWKSCache, error) {
 // VerificationKey returns the RSA key for the given key id, refreshing the key
 // set when the id is unknown or the cache is no longer fresh.
 func (c *JWKSCache) VerificationKey(ctx context.Context, keyID string) (crypto.PublicKey, error) {
+	for {
+		now := c.now()
+		cached, known, fetchedAt, lastAttempt, refreshing := c.snapshot(keyID)
+		age := now.Sub(fetchedAt)
+		fresh := !fetchedAt.IsZero() && age < c.refreshInterval
+		withinStaleTolerance := known && !fetchedAt.IsZero() && age <= c.refreshInterval+c.staleTolerance
+		refreshDue := lastAttempt.IsZero() || now.Sub(lastAttempt) >= c.minInterval
+
+		if known && fresh {
+			return cached, nil
+		}
+
+		// A known key inside the stale window never waits behind remote I/O. The
+		// first caller starts one background refresh and every concurrent caller
+		// keeps authenticating from the immutable cached snapshot.
+		if withinStaleTolerance {
+			if refreshing == nil && refreshDue {
+				if done, claimed := c.claimRefresh(now); claimed {
+					go c.refresh(context.WithoutCancel(ctx), now, done)
+				}
+			}
+			return cached, nil
+		}
+
+		if refreshing != nil {
+			select {
+			case <-refreshing:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if !refreshDue {
+			if known {
+				return nil, errors.New("auth: cached JWKS exceeded its stale tolerance")
+			}
+			return nil, fmt.Errorf("auth: key id %q is unknown and refresh is rate limited", keyID)
+		}
+
+		done, claimed := c.claimRefresh(now)
+		if !claimed {
+			continue
+		}
+		c.refresh(ctx, now, done)
+
+		c.mu.RLock()
+		key, present := c.keys[keyID]
+		refreshErr := c.lastRefreshError
+		c.mu.RUnlock()
+		if refreshErr != nil {
+			return nil, fmt.Errorf("auth: refresh JWKS: %w", refreshErr)
+		}
+		if present {
+			return key, nil
+		}
+		return nil, fmt.Errorf("auth: key id %q is not published by the identity provider", keyID)
+	}
+}
+
+func (c *JWKSCache) snapshot(keyID string) (*rsa.PublicKey, bool, time.Time, time.Time, chan struct{}) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	key, known := c.keys[keyID]
+	return key, known, c.fetchedAt, c.lastAttempt, c.refreshDone
+}
+
+func (c *JWKSCache) claimRefresh(now time.Time) (chan struct{}, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.refreshDone != nil {
+		return c.refreshDone, false
+	}
+	done := make(chan struct{})
+	c.refreshDone = done
+	c.lastAttempt = now
+	return done, true
+}
 
-	now := c.now()
-	cached, known := c.keys[keyID]
-	fresh := !c.fetchedAt.IsZero() && now.Sub(c.fetchedAt) < c.refreshInterval
-	if known && fresh {
-		return cached, nil
+func (c *JWKSCache) refresh(ctx context.Context, fetchedAt time.Time, done chan struct{}) {
+	bounded, cancel := context.WithTimeout(ctx, defaultJWKSFetchTimeout)
+	defer cancel()
+	keys, err := c.fetch(bounded)
+	c.mu.Lock()
+	if err == nil {
+		c.keys = keys
+		c.fetchedAt = fetchedAt
 	}
-
-	if now.Sub(c.lastAttempt) >= c.minInterval {
-		c.lastAttempt = now
-		keys, err := c.fetch(ctx)
-		if err == nil {
-			c.keys = keys
-			c.fetchedAt = now
-			if key, present := keys[keyID]; present {
-				return key, nil
-			}
-			return nil, fmt.Errorf("auth: key id %q is not published by the identity provider", keyID)
-		}
-		if !known {
-			return nil, fmt.Errorf("auth: refresh JWKS: %w", err)
-		}
-		// Fall through: the provider failed but a cached key still matches.
+	c.lastRefreshError = err
+	if c.refreshDone == done {
+		c.refreshDone = nil
+		close(done)
 	}
-
-	if !known {
-		return nil, fmt.Errorf("auth: key id %q is unknown and refresh is rate limited", keyID)
-	}
-	if now.Sub(c.fetchedAt) > c.refreshInterval+c.staleTolerance {
-		return nil, errors.New("auth: cached JWKS exceeded its stale tolerance")
-	}
-	return cached, nil
+	c.mu.Unlock()
 }
 
 func (c *JWKSCache) fetch(ctx context.Context) (map[string]*rsa.PublicKey, error) {
