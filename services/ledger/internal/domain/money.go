@@ -33,6 +33,9 @@ func ParseBRL(value string) (Money, error) {
 	if len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && (len(parts[1]) == 0 || len(parts[1]) > 2)) {
 		return Money{}, ErrInvalidAmount
 	}
+	if !asciiDigits(parts[0]) || (len(parts) == 2 && !asciiDigits(parts[1])) {
+		return Money{}, ErrInvalidAmount
+	}
 	whole, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || whole < 0 {
 		return Money{}, ErrInvalidAmount
@@ -52,6 +55,18 @@ func ParseBRL(value string) (Money, error) {
 		return Money{}, ErrInvalidAmount
 	}
 	return NewMoney(whole*100+fraction, CurrencyBRL)
+}
+
+func asciiDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index := range len(value) {
+		if value[index] < '0' || value[index] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (m Money) AmountMinor() int64 { return m.minor }

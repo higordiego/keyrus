@@ -8,6 +8,7 @@ require (
 	github.com/cucumber/messages/go/v21 v21.0.1
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/testcontainers/testcontainers-go v0.42.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260729162451-8efbd57d26e0
 	google.golang.org/grpc v1.83.0

@@ -22,6 +22,11 @@ func TestParseBRLDoesNotRound(t *testing.T) {
 		{value: "0.00", err: ErrInvalidAmount},
 		{value: "-1.00", err: ErrInvalidAmount},
 		{value: "1,00", err: ErrInvalidAmount},
+		{value: "1.-1", err: ErrInvalidAmount},
+		{value: "0.+1", err: ErrInvalidAmount},
+		{value: "1.a", err: ErrInvalidAmount},
+		{value: "1. 1", err: ErrInvalidAmount},
+		{value: "1.١", err: ErrInvalidAmount},
 	}
 	for _, test := range tests {
 		t.Run(test.value, func(t *testing.T) {
