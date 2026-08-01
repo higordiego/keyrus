@@ -33,3 +33,21 @@ func TestRecomputeContinuationMigrationIsEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestRecomputeContinuationDownRunsPreflightBeforeDDL(t *testing.T) {
+	contents, err := FS.ReadFile("000002_recompute_continuation.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(contents)
+	preflight := strings.Index(sql, "DO $preflight$")
+	firstDDL := strings.Index(sql, "DROP INDEX")
+	if preflight < 0 || firstDDL < 0 || preflight > firstDDL {
+		t.Fatalf("down migration must run incompatibility preflight before DDL")
+	}
+	for _, diagnostic := range []string{"through_date - from_date > 30", "archive or remove incompatible long-range jobs"} {
+		if !strings.Contains(sql, diagnostic) {
+			t.Errorf("down migration preflight does not contain %q", diagnostic)
+		}
+	}
+}
