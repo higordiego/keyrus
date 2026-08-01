@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,24 +26,30 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), postgrestest.StartupTimeout)
 
 	var err error
-	integrationDatabase, err = postgrestest.Start(ctx, "consolidation")
+	integrationDatabase, err = postgrestest.Start(startupCtx, "consolidation")
+	cancelStartup()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	integrationPool = integrationDatabase.Pool
-	if err = ApplyMigrations(ctx, integrationPool); err != nil {
+	migrationCtx, cancelMigration := context.WithTimeout(context.Background(), 2*time.Minute)
+	err = ApplyMigrations(migrationCtx, integrationPool)
+	cancelMigration()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		integrationDatabase.Close()
+		_ = integrationDatabase.Close()
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "PostgreSQL integration ready: %s\n", postgrestest.Image)
+	fmt.Fprintf(os.Stderr, "PostgreSQL integration ready: %s database=%s\n", postgrestest.Image, integrationDatabase.DatabaseName)
 	code := m.Run()
-	integrationDatabase.Close()
+	if err := integrationDatabase.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
 	os.Exit(code)
 }
 
@@ -80,6 +88,17 @@ func requirePostgres(t *testing.T) (*Store, *application.Projector) {
 	return store, projector
 }
 
+func TestIntegrationDatabaseIsOwnedByThisPackageProcess(t *testing.T) {
+	var current string
+	if err := integrationPool.QueryRow(context.Background(), `SELECT current_database()`).Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := "keyrus_consolidation_" + strconv.Itoa(os.Getpid()) + "_"
+	if current != integrationDatabase.DatabaseName || !strings.HasPrefix(current, wantPrefix) {
+		t.Fatalf("integration database %q is not owned by this package/process (%q)", current, wantPrefix)
+	}
+}
+
 func TestApplyMigrationsIsConcurrentAndIdempotent(t *testing.T) {
 	const workers = 4
 	start := make(chan struct{})
@@ -101,6 +120,122 @@ func TestApplyMigrationsIsConcurrentAndIdempotent(t *testing.T) {
 			t.Errorf("concurrent migration: %v", err)
 		}
 	}
+}
+
+const recomputeContinuationMigration = "000002_recompute_continuation.up.sql"
+
+func TestRevertMigrationPreflightLeavesLongJobSchemaIntact(t *testing.T) {
+	requirePostgres(t)
+	ctx := context.Background()
+	if _, err := integrationPool.Exec(ctx, `
+		INSERT INTO consolidation.recompute_job (
+			event_id, merchant_id, from_date, through_date, next_date, status, completed_at
+		) VALUES (
+			'81000000-0000-4000-8000-000000000001',
+			'81000000-0000-4000-8000-000000000002',
+			'2026-04-01', '2026-07-31', NULL, 'completed', clock_timestamp()
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	before := migrationSchemaFingerprint(t)
+	err := RevertMigration(ctx, integrationPool, recomputeContinuationMigration)
+	if err == nil || !strings.Contains(err.Error(), "archive or remove incompatible long-range jobs") {
+		t.Fatalf("long-range downgrade did not fail at preflight: %v", err)
+	}
+	after := migrationSchemaFingerprint(t)
+	if after != before {
+		t.Fatalf("refused downgrade changed schema\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestRevertMigrationRollsBackEarlierDDLOnLaterFailure(t *testing.T) {
+	requirePostgres(t)
+	ctx := context.Background()
+	if _, err := integrationPool.Exec(ctx, `
+		CREATE VIEW consolidation.recompute_next_date_dependency AS
+		SELECT next_date FROM consolidation.recompute_job`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = integrationPool.Exec(context.Background(), `
+			DROP VIEW IF EXISTS consolidation.recompute_next_date_dependency`)
+	}()
+	before := migrationSchemaFingerprint(t)
+	if err := RevertMigration(ctx, integrationPool, recomputeContinuationMigration); err == nil {
+		t.Fatal("dependent view should reject the down migration")
+	}
+	after := migrationSchemaFingerprint(t)
+	if after != before {
+		t.Fatalf("transactional downgrade failure changed schema\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestRevertMigrationAndReapplyRoundTrip(t *testing.T) {
+	requirePostgres(t)
+	ctx := context.Background()
+	defer func() {
+		if err := ApplyMigrations(context.Background(), integrationPool); err != nil {
+			t.Errorf("restore continuation migration: %v", err)
+		}
+	}()
+	if err := RevertMigration(ctx, integrationPool, recomputeContinuationMigration); err != nil {
+		t.Fatal(err)
+	}
+	var nextDateExists, applied bool
+	if err := integrationPool.QueryRow(ctx, `
+		SELECT
+			EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'consolidation'
+					AND table_name = 'recompute_job'
+					AND column_name = 'next_date'
+			),
+			EXISTS (
+				SELECT 1 FROM consolidation.schema_migration WHERE name = $1
+			)`, recomputeContinuationMigration).Scan(&nextDateExists, &applied); err != nil {
+		t.Fatal(err)
+	}
+	if nextDateExists || applied {
+		t.Fatalf("down migration left next_date=%v history=%v", nextDateExists, applied)
+	}
+	if err := ApplyMigrations(ctx, integrationPool); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func migrationSchemaFingerprint(t *testing.T) string {
+	t.Helper()
+	var fingerprint string
+	if err := integrationPool.QueryRow(context.Background(), `
+		SELECT jsonb_build_object(
+			'columns', (
+				SELECT jsonb_agg(jsonb_build_array(
+					column_name, data_type, is_nullable, column_default, ordinal_position
+				) ORDER BY ordinal_position)
+				FROM information_schema.columns
+				WHERE table_schema = 'consolidation' AND table_name = 'recompute_job'
+			),
+			'indexes', (
+				SELECT jsonb_agg(indexdef ORDER BY indexname)
+				FROM pg_indexes
+				WHERE schemaname = 'consolidation' AND tablename = 'recompute_job'
+			),
+			'constraints', COALESCE((
+				SELECT jsonb_object_agg(conname, pg_get_constraintdef(oid))
+				FROM pg_constraint
+				WHERE conrelid = 'consolidation.recompute_job'::regclass
+			), '{}'::jsonb),
+			'rows', COALESCE((
+				SELECT jsonb_agg(to_jsonb(job) ORDER BY id)
+				FROM consolidation.recompute_job AS job
+			), '[]'::jsonb),
+			'applied', EXISTS (
+				SELECT 1 FROM consolidation.schema_migration WHERE name = $1
+			)
+		)::text`, recomputeContinuationMigration).Scan(&fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	return fingerprint
 }
 
 func TestProjectorFinancialOracleAndIdempotencyOnPostgres(t *testing.T) {
@@ -190,55 +325,92 @@ func TestProjectorRejectsPositionIdentityConflictWithoutPartialEffect(t *testing
 }
 
 func TestMerchantAdvisoryLockDoesNotBlockIndependentMerchant(t *testing.T) {
+	if err := exerciseMerchantLockIsolation(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func exerciseMerchantLockIsolation(t *testing.T) (err error) {
 	_, projector := requirePostgres(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
 	merchantA := "40000000-0000-4000-8000-000000000004"
 	merchantB := "50000000-0000-4000-8000-000000000005"
 
 	lockTx, err := integrationPool.Begin(ctx)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	defer func() { _ = lockTx.Rollback(ctx) }()
+	lockReleased := false
+	waiterRunning := false
+	blockedDone := make(chan error, 1)
+	defer func() {
+		if !lockReleased {
+			_ = lockTx.Rollback(context.Background())
+		}
+		cancel()
+		if waiterRunning {
+			waiterErr := <-blockedDone
+			if err == nil && waiterErr != nil {
+				err = fmt.Errorf("merchant A waiter cleanup: %w", waiterErr)
+			}
+		}
+	}()
 	if _, err := lockTx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, merchantA); err != nil {
-		t.Fatal(err)
+		return err
 	}
 
-	blockedDone := make(chan error, 1)
+	waiterRunning = true
 	go func() {
 		_, applyErr := projector.Apply(ctx, fixtureEvent(merchantA, 1, domain.EntryCredit, 100, "2026-07-31", nil))
 		blockedDone <- applyErr
 	}()
-	select {
-	case err := <-blockedDone:
-		t.Fatalf("merchant A unexpectedly bypassed held lock: %v", err)
-	case <-time.After(150 * time.Millisecond):
+	if err := waitForAdvisoryWaiter(ctx); err != nil {
+		return err
 	}
 
-	independentDone := make(chan error, 1)
-	go func() {
-		_, applyErr := projector.Apply(ctx, fixtureEvent(merchantB, 1, domain.EntryCredit, 200, "2026-07-31", nil))
-		independentDone <- applyErr
-	}()
-	select {
-	case err := <-independentDone:
-		if err != nil {
-			t.Fatalf("merchant B apply: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("merchant B was blocked by merchant A advisory lock")
+	// The ungranted advisory lock above is the deterministic barrier. B now
+	// executes synchronously while A is observably waiting; the context is only
+	// a safety budget, not a latency oracle.
+	if _, err := projector.Apply(ctx, fixtureEvent(merchantB, 1, domain.EntryCredit, 200, "2026-07-31", nil)); err != nil {
+		return fmt.Errorf("merchant B did not advance while merchant A waited: %w", err)
 	}
 
 	if err := lockTx.Commit(ctx); err != nil {
-		t.Fatal(err)
+		return err
 	}
-	select {
-	case err := <-blockedDone:
-		if err != nil {
-			t.Fatalf("merchant A apply after unlock: %v", err)
+	lockReleased = true
+	if err := <-blockedDone; err != nil {
+		waiterRunning = false
+		return fmt.Errorf("merchant A apply after unlock: %w", err)
+	}
+	waiterRunning = false
+	return nil
+}
+
+func waitForAdvisoryWaiter(ctx context.Context) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		if err := integrationPool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_locks
+				WHERE locktype = 'advisory'
+					AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+					AND NOT granted
+			)`).Scan(&waiting); err != nil {
+			return fmt.Errorf("observe merchant advisory waiter: %w", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("merchant A did not resume after lock release")
+		if waiting {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("merchant A never became an observable advisory waiter: %w", ctx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 
