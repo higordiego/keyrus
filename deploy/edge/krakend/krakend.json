@@ -1,0 +1,375 @@
+{
+  "$schema": "https://www.krakend.io/schema/v2.10/krakend.json",
+  "version": 3,
+  "name": "cashflow-public-edge",
+  "port": 8080,
+  "timeout": "3s",
+  "cache_ttl": "0s",
+  "read_header_timeout": "2s",
+  "read_timeout": "5s",
+  "write_timeout": "5s",
+  "idle_timeout": "30s",
+  "max_header_bytes": 16384,
+  "output_encoding": "no-op",
+  "disable_rest": true,
+  "extra_config": {
+    "router": {
+      "logger_skip_paths": ["/__health"],
+      "return_error_msg": false,
+      "remove_extra_slash": false,
+      "auto_options": false,
+      "hide_version_header": true
+    },
+    "security/http": {
+      "allowed_hosts": ["edge.cashflow.local"],
+      "ssl_redirect": true,
+      "ssl_proxy_headers": {"X-Forwarded-Proto": "https"},
+      "sts_seconds": 31536000,
+      "sts_include_subdomains": true,
+      "frame_deny": true,
+      "content_type_nosniff": true,
+      "browser_xss_filter": true,
+      "referrer_policy": "no-referrer"
+    },
+    "telemetry/opentelemetry": {
+      "service_name": "cashflow-edge",
+      "exporters": {
+        "otlp": [
+          {
+            "name": "collector",
+            "host": "otel-collector",
+            "port": 4317,
+            "use_http": false
+          }
+        ]
+      },
+      "layers": {
+        "global": {"disable_metrics": false, "disable_traces": false},
+        "proxy": {"disable_metrics": false, "disable_traces": false},
+        "backend": {
+          "metrics": {"disable_stage": false, "round_trip": true},
+          "traces": {"disable_stage": false, "round_trip": true}
+        }
+      },
+      "skip_paths": ["/__health"]
+    }
+  },
+  "endpoints": [
+    {
+      "endpoint": "/v1/entries",
+      "method": "POST",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Authorization", "Idempotency-Key", "traceparent", "tracestate", "Content-Type", "Accept"],
+      "input_query_strings": [],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "RS256",
+          "jwk_url": "http://keycloak:8080/realms/cashflow/protocol/openid-connect/certs",
+          "issuer": "https://edge.cashflow.local/realms/cashflow",
+          "audience": ["cashflow-public-api"],
+          "scopes_key": "scope",
+          "scopes": ["ledger:write"],
+          "scopes_matcher": "all",
+          "disable_jwk_security": false,
+          "cache": true,
+          "cache_duration": 900,
+          "operation_debug": false
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 400,
+          "capacity": 400,
+          "client_max_rate": 20,
+          "client_capacity": 20,
+          "strategy": "ip",
+          "every": "1s"
+        }
+      },
+      "backend": [
+        {
+          "url_pattern": "/v1/entries",
+          "method": "POST",
+          "encoding": "no-op",
+          "host": ["http://ledger-api:8081"],
+          "extra_config": {
+            "backend/http": {"return_error_code": true}
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/entries/{entry_id}/reversals",
+      "method": "POST",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Authorization", "Idempotency-Key", "traceparent", "tracestate", "Content-Type", "Accept"],
+      "input_query_strings": [],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "RS256",
+          "jwk_url": "http://keycloak:8080/realms/cashflow/protocol/openid-connect/certs",
+          "issuer": "https://edge.cashflow.local/realms/cashflow",
+          "audience": ["cashflow-public-api"],
+          "scopes_key": "scope",
+          "scopes": ["ledger:write"],
+          "scopes_matcher": "all",
+          "disable_jwk_security": false,
+          "cache": true,
+          "cache_duration": 900,
+          "operation_debug": false
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 400,
+          "capacity": 400,
+          "client_max_rate": 20,
+          "client_capacity": 20,
+          "strategy": "ip",
+          "every": "1s"
+        }
+      },
+      "backend": [
+        {
+          "url_pattern": "/v1/entries/{entry_id}/reversals",
+          "method": "POST",
+          "encoding": "no-op",
+          "host": ["http://ledger-api:8081"],
+          "extra_config": {
+            "backend/http": {"return_error_code": true}
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/entries/{entry_id}",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Authorization", "traceparent", "tracestate", "Accept"],
+      "input_query_strings": [],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "RS256",
+          "jwk_url": "http://keycloak:8080/realms/cashflow/protocol/openid-connect/certs",
+          "issuer": "https://edge.cashflow.local/realms/cashflow",
+          "audience": ["cashflow-public-api"],
+          "scopes_key": "scope",
+          "scopes": ["ledger:read"],
+          "scopes_matcher": "all",
+          "disable_jwk_security": false,
+          "cache": true,
+          "cache_duration": 900,
+          "operation_debug": false
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 400,
+          "capacity": 400,
+          "client_max_rate": 20,
+          "client_capacity": 20,
+          "strategy": "ip",
+          "every": "1s"
+        }
+      },
+      "backend": [
+        {
+          "url_pattern": "/v1/entries/{entry_id}",
+          "method": "GET",
+          "encoding": "no-op",
+          "host": ["http://ledger-api:8081"],
+          "extra_config": {
+            "backend/http": {"return_error_code": true}
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/entries",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Authorization", "traceparent", "tracestate", "Accept"],
+      "input_query_strings": ["start_date", "end_date", "page_size", "page_token"],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "RS256",
+          "jwk_url": "http://keycloak:8080/realms/cashflow/protocol/openid-connect/certs",
+          "issuer": "https://edge.cashflow.local/realms/cashflow",
+          "audience": ["cashflow-public-api"],
+          "scopes_key": "scope",
+          "scopes": ["ledger:read"],
+          "scopes_matcher": "all",
+          "disable_jwk_security": false,
+          "cache": true,
+          "cache_duration": 900,
+          "operation_debug": false
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 400,
+          "capacity": 400,
+          "client_max_rate": 20,
+          "client_capacity": 20,
+          "strategy": "ip",
+          "every": "1s"
+        }
+      },
+      "backend": [
+        {
+          "url_pattern": "/v1/entries",
+          "method": "GET",
+          "encoding": "no-op",
+          "host": ["http://ledger-api:8081"],
+          "extra_config": {
+            "backend/http": {"return_error_code": true}
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/daily-balances",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Authorization", "traceparent", "tracestate", "Accept"],
+      "input_query_strings": ["start_date", "end_date"],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "RS256",
+          "jwk_url": "http://keycloak:8080/realms/cashflow/protocol/openid-connect/certs",
+          "issuer": "https://edge.cashflow.local/realms/cashflow",
+          "audience": ["cashflow-public-api"],
+          "scopes_key": "scope",
+          "scopes": ["consolidation:read"],
+          "scopes_matcher": "all",
+          "disable_jwk_security": false,
+          "cache": true,
+          "cache_duration": 900,
+          "operation_debug": false
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 400,
+          "capacity": 400,
+          "client_max_rate": 20,
+          "client_capacity": 20,
+          "strategy": "ip",
+          "every": "1s"
+        }
+      },
+      "backend": [
+        {
+          "url_pattern": "/v1/daily-balances",
+          "method": "GET",
+          "encoding": "no-op",
+          "host": ["http://consolidation-api:8082"],
+          "extra_config": {
+            "backend/http": {"return_error_code": true}
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/realms/cashflow/.well-known/openid-configuration",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Accept", "traceparent", "tracestate"],
+      "input_query_strings": [],
+      "backend": [
+        {
+          "url_pattern": "/realms/cashflow/.well-known/openid-configuration",
+          "method": "GET",
+          "encoding": "no-op",
+          "host": ["http://keycloak:8080"]
+        }
+      ]
+    },
+    {
+      "endpoint": "/realms/cashflow/protocol/openid-connect/certs",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Accept", "traceparent", "tracestate"],
+      "input_query_strings": [],
+      "backend": [
+        {
+          "url_pattern": "/realms/cashflow/protocol/openid-connect/certs",
+          "method": "GET",
+          "encoding": "no-op",
+          "host": ["http://keycloak:8080"]
+        }
+      ]
+    },
+    {
+      "endpoint": "/realms/cashflow/protocol/openid-connect/auth",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Accept", "Cookie", "traceparent", "tracestate"],
+      "input_query_strings": ["*"],
+      "backend": [
+        {
+          "url_pattern": "/realms/cashflow/protocol/openid-connect/auth",
+          "method": "GET",
+          "encoding": "no-op",
+          "host": ["http://keycloak:8080"]
+        }
+      ]
+    },
+    {
+      "endpoint": "/realms/cashflow/protocol/openid-connect/token",
+      "method": "POST",
+      "output_encoding": "no-op",
+      "timeout": "5s",
+      "input_headers": ["Accept", "Authorization", "Content-Type", "traceparent", "tracestate"],
+      "input_query_strings": [],
+      "extra_config": {
+        "qos/ratelimit/router": {
+          "max_rate": 40,
+          "capacity": 40,
+          "client_max_rate": 5,
+          "client_capacity": 5,
+          "strategy": "ip",
+          "every": "1s"
+        }
+      },
+      "backend": [
+        {
+          "url_pattern": "/realms/cashflow/protocol/openid-connect/token",
+          "method": "POST",
+          "encoding": "no-op",
+          "host": ["http://keycloak:8080"]
+        }
+      ]
+    },
+    {
+      "endpoint": "/realms/cashflow/protocol/openid-connect/userinfo",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Accept", "Authorization", "traceparent", "tracestate"],
+      "input_query_strings": [],
+      "backend": [
+        {
+          "url_pattern": "/realms/cashflow/protocol/openid-connect/userinfo",
+          "method": "GET",
+          "encoding": "no-op",
+          "host": ["http://keycloak:8080"]
+        }
+      ]
+    },
+    {
+      "endpoint": "/realms/cashflow/protocol/openid-connect/logout",
+      "method": "POST",
+      "output_encoding": "no-op",
+      "timeout": "3s",
+      "input_headers": ["Accept", "Authorization", "Content-Type", "traceparent", "tracestate"],
+      "input_query_strings": [],
+      "backend": [
+        {
+          "url_pattern": "/realms/cashflow/protocol/openid-connect/logout",
+          "method": "POST",
+          "encoding": "no-op",
+          "host": ["http://keycloak:8080"]
+        }
+      ]
+    }
+  ]
+}
