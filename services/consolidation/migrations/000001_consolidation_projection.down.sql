@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS consolidation.dead_letter_event;
+DROP TABLE IF EXISTS consolidation.event_pending;
+DROP TABLE IF EXISTS consolidation.recompute_job;
+DROP TABLE IF EXISTS consolidation.position_receipt;
+DROP TABLE IF EXISTS consolidation.merchant_progress;
+DROP TABLE IF EXISTS consolidation.daily_balance;
+DROP TABLE IF EXISTS consolidation.inbox_event;
+DROP TABLE IF EXISTS consolidation.schema_migration;
+DROP SCHEMA IF EXISTS consolidation;
