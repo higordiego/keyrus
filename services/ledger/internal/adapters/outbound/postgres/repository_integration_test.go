@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -33,6 +35,8 @@ const (
 	merchantB               = "018f0000-0000-7000-8000-000000000102"
 	validTraceparent        = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	published000001Checksum = "7df6b8f3cc82408ae9c53e99d7e7667e55a0431bc54e8de8e8cf7238989d4417"
+	postgresImage           = "postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"
+	postgresStartupBudget   = 5 * time.Minute
 )
 
 var (
@@ -47,44 +51,48 @@ func TestMain(m *testing.M) {
 	// The fixture terminates its container explicitly. Disabling Ryuk avoids a
 	// second image dependency and keeps the integration test usable offline.
 	_ = os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), postgresStartupBudget)
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "postgres:17-alpine",
+			Image:        postgresImage,
 			ExposedPorts: []string{"5432/tcp"},
 			Env: map[string]string{
 				"POSTGRES_DB":       "cashflow",
 				"POSTGRES_USER":     "ledger_test",
 				"POSTGRES_PASSWORD": "ledger_test",
 			},
-			WaitingFor: wait.ForAll(
-				wait.ForLog("database system is ready to accept connections").
-					WithOccurrence(2).
-					WithPollInterval(100*time.Millisecond),
-				wait.ForExec([]string{
-					"pg_isready", "-U", "ledger_test", "-d", "cashflow",
-				}).WithPollInterval(100*time.Millisecond),
-			).WithDeadline(90 * time.Second),
+			WaitingFor: wait.ForExec([]string{
+				"pg_isready", "-U", "ledger_test", "-d", "cashflow",
+			}).WithPollInterval(250 * time.Millisecond).WithStartupTimeout(postgresStartupBudget),
 			SkipReaper: true,
 		},
 		Started: true,
 	})
 	if err != nil {
+		cancel()
+		if cleanupError := terminateTestContainer(container); cleanupError != nil {
+			fmt.Fprintf(os.Stderr, "cleanup failed PostgreSQL testcontainer: %v\n", cleanupError)
+		}
 		fmt.Fprintf(os.Stderr, "start PostgreSQL testcontainer: %v\n", err)
 		os.Exit(1)
 	}
 	testContainer = container
 	host, err := container.Host(ctx)
 	if err != nil {
+		cancel()
 		fmt.Fprintf(os.Stderr, "resolve PostgreSQL host: %v\n", err)
-		_ = container.Terminate(context.Background())
+		if cleanupError := cleanupPostgresFixture(); cleanupError != nil {
+			fmt.Fprintf(os.Stderr, "cleanup PostgreSQL fixture: %v\n", cleanupError)
+		}
 		os.Exit(1)
 	}
 	port, err := container.MappedPort(ctx, "5432/tcp")
 	if err != nil {
+		cancel()
 		fmt.Fprintf(os.Stderr, "resolve PostgreSQL port: %v\n", err)
-		_ = container.Terminate(context.Background())
+		if cleanupError := cleanupPostgresFixture(); cleanupError != nil {
+			fmt.Fprintf(os.Stderr, "cleanup PostgreSQL fixture: %v\n", cleanupError)
+		}
 		os.Exit(1)
 	}
 	hostPort := net.JoinHostPort(host, port.Port())
@@ -112,19 +120,47 @@ GRANT SELECT ON ALL TABLES IN SCHEMA ledger TO ledger_readonly;`)
 		readOnlyPool, err = openTestPool(ctx, hostPort, "ledger_readonly", "ledger_readonly", "cashflow")
 	}
 	if err != nil {
+		cancel()
 		fmt.Fprintf(os.Stderr, "prepare Ledger schema: %v\n", err)
-		if testPool != nil {
-			testPool.Close()
+		if cleanupError := cleanupPostgresFixture(); cleanupError != nil {
+			fmt.Fprintf(os.Stderr, "cleanup PostgreSQL fixture: %v\n", cleanupError)
 		}
-		_ = container.Terminate(context.Background())
 		os.Exit(1)
 	}
+	cancel()
 	code := m.Run()
-	readOnlyPool.Close()
-	runtimePool.Close()
-	testPool.Close()
-	_ = testContainer.Terminate(context.Background())
+	if err := cleanupPostgresFixture(); err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup PostgreSQL fixture: %v\n", err)
+		code = 1
+	}
 	os.Exit(code)
+}
+
+func cleanupPostgresFixture() error {
+	if readOnlyPool != nil {
+		readOnlyPool.Close()
+		readOnlyPool = nil
+	}
+	if runtimePool != nil {
+		runtimePool.Close()
+		runtimePool = nil
+	}
+	if testPool != nil {
+		testPool.Close()
+		testPool = nil
+	}
+	err := terminateTestContainer(testContainer)
+	testContainer = nil
+	return err
+}
+
+func terminateTestContainer(container testcontainers.Container) error {
+	if container == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), postgresStartupBudget)
+	defer cancel()
+	return container.Terminate(ctx)
 }
 
 func openTestPool(ctx context.Context, hostPort, user, password, database string) (*pgxpool.Pool, error) {
@@ -134,7 +170,7 @@ func openTestPool(ctx context.Context, hostPort, user, password, database string
 		return nil, fmt.Errorf("parse PostgreSQL DSN: %w", err)
 	}
 	config.MaxConns = 32
-	readyContext, cancel := context.WithTimeout(ctx, 15*time.Second)
+	readyContext, cancel := context.WithTimeout(ctx, postgresStartupBudget)
 	defer cancel()
 	backoff := 50 * time.Millisecond
 	var lastError error
@@ -171,9 +207,11 @@ func openTestPool(ctx context.Context, hostPort, user, password, database string
 
 func retryablePostgresStartupError(err error) bool {
 	var postgresError *pgconn.PgError
-	var networkError net.Error
-	return pgconn.SafeToRetry(err) ||
-		errors.As(err, &networkError) ||
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ETIMEDOUT) ||
 		(errors.As(err, &postgresError) && postgresError.Code == "57P03")
 }
 
@@ -182,11 +220,31 @@ func TestPostgresStartupRetryClassification(t *testing.T) {
 	if !retryablePostgresStartupError(&pgconn.PgError{Code: "57P03"}) {
 		t.Fatal("database-starting SQLSTATE must be retried")
 	}
-	if !retryablePostgresStartupError(&net.OpError{Op: "read", Net: "tcp", Err: errors.New("reset")}) {
+	if !retryablePostgresStartupError(&net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}) {
 		t.Fatal("startup transport reset must be retried")
 	}
 	if retryablePostgresStartupError(&pgconn.PgError{Code: "28P01"}) {
 		t.Fatal("authentication failure must fail immediately")
+	}
+	if retryablePostgresStartupError(&net.DNSError{Name: "invalid.test", Err: "no such host"}) {
+		t.Fatal("invalid host configuration must fail immediately")
+	}
+}
+
+func TestOpenTestPoolRejectsInvalidCredentialsWithoutRetry(t *testing.T) {
+	startedAt := time.Now()
+	pool, err := openTestPool(
+		context.Background(), testHostPort, "ledger_test", "invalid-password", "cashflow",
+	)
+	if pool != nil {
+		pool.Close()
+	}
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) || postgresError.Code != "28P01" {
+		t.Fatalf("expected authentication failure, got %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 5*time.Second {
+		t.Fatalf("authentication failure was retried for %s", elapsed)
 	}
 }
 
