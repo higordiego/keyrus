@@ -9,11 +9,16 @@ GitHub Actions orchestrates the same commands developers run locally. No workflo
 | `make ci` | generated-code drift, formatting, Buf lint/breaking, build, vet, race tests and BDD catalog | `evidence/reports/ci/` via `make reports` |
 | `make policy` | actionlint, full-SHA Action pins, least privilege, hosted runners, timeouts/concurrency and negative unpinned-Action fixture | `evidence/reports/policy/` |
 | `make security` | govulncheck, Gitleaks history/worktree, Trivy filesystem/config and controlled negative secret/vulnerability fixtures | `evidence/reports/security/` |
-| `make integration` | generated public API contracts integrated with the executable Godog foundation | `evidence/reports/integration/` |
 | `make build-validation` | two identical Go builds, SHA-256 checksums, CycloneDX/SPDX SBOM | `evidence/reports/build/` |
 | `make full-validation` | all materialized gates above; continues after a failed gate so all possible evidence exists | `evidence/reports/full/` plus gate directories |
 
-Tool binaries live under ignored `.tools/bin`. Go-installed tools use version sentinels; downloaded Gitleaks and Trivy releases are fixed by version, platform, and SHA-256. A clean clone needs Go 1.26.4 plus standard `curl`, `tar`, and `shasum`, but no preinstalled security scanner.
+Tool binaries live under ignored `.tools/bin`. Go-installed tools use version sentinels; downloaded Gitleaks and Trivy releases are fixed by version, platform, and SHA-256. A clean clone needs Go 1.26.5 plus standard `curl`, `tar`, and `shasum`, but no preinstalled security scanner.
+
+Gitleaks scans only the current branch ancestry (`HEAD`) so unrelated local worktree refs cannot contaminate evidence. `.gitleaksignore` contains one immutable fingerprint for the inert token committed by `e674d01`; it cannot suppress another rule, line, path, or commit. Negative fixtures are generated only in a temporary directory and prove that an additional default-rule finding remains blocking.
+
+Govulncheck text mode is the blocking execution; JSON runs separately as evidence because JSON mode can return zero while reporting reachable traces. Its negative fixture builds a temporary module with a known reachable call and invokes the same production wrapper. Trivy always emits JSON with exit zero, then `cmd/securitypolicy` applies the blocking severity/fix policy; the synthetic Trivy fixture exercises that exact parser.
+
+There is no `integration` target yet: API contract tests and the Godog catalog are already part of CI and do not prove an external boundary. The first datastore, broker, or container producer must materialize integration testing and only then add it to full validation.
 
 There is no Containerfile or image producer yet. Build validation records image scanning as not applicable instead of creating an empty job. The ticket that introduces the first image must add build and Trivy image scanning together.
 
