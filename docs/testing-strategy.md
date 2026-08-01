@@ -95,7 +95,7 @@ A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a 
 | Rodar a suíte implementada | `go test -race ./test/bdd -run '^TestImplementedScenarios$' -v` | todos os cenários do manifesto passam; atualmente o runner comprova que a seleção vazia é rejeitada sem executar comportamento |
 | Rodar todos os testes Go | `go test -race ./...` | todos os pacotes verdes; pode depender de gerados/recortes ainda em construção |
 | Rodar gates do repositório | `make ci` | geração, formato, contratos, build, testes e catálogo verdes |
-| Gerar relatórios básicos | `make reports` | limpa evidência anterior, executa os dois produtores mesmo se um falhar, preserva o primeiro código de falha e produz `go-test.json` e `bdd-catalog.json`; ambos são ignorados pelo Git |
+| Gerar relatórios básicos | `make reports` | limpa evidência anterior, executa os dois produtores mesmo se um falhar, preserva o primeiro código de falha e produz `evidence/reports/ci/go-test.json`, `bdd-catalog.json` e metadados; os resultados são ignorados pelo Git |
 
 Não edite o manifesto apenas para selecionar temporariamente um cenário. Até existir um filtro explícito, a seleção oficial é versionada e representa compromisso de implementação.
 

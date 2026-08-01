@@ -1,4 +1,4 @@
-name: ci
+name: policy
 
 on:
   push:
@@ -10,32 +10,27 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: policy-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  foundation:
-    name: foundation
+  workflow-policy:
+    name: workflow-policy
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
           go-version: '1.26.5'
           cache: true
-      - name: Verify foundation
-        run: make ci
-      - name: Build CI evidence
-        if: always()
-        run: make reports
-      - name: Publish CI evidence
+      - name: Enforce workflow policy
+        run: make policy
+      - name: Publish policy evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ci-evidence-${{ github.sha }}
-          path: evidence/reports/ci/
+          name: policy-evidence-${{ github.sha }}
+          path: evidence/reports/policy/
           if-no-files-found: error
           retention-days: 14
