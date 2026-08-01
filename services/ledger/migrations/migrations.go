@@ -28,6 +28,7 @@ const (
 var ordered = []migration{
 	{up: legacyMigration, down: "000001_ledger_core.down.sql"},
 	{up: "000002_ledger_integrity.up.sql", down: "000002_ledger_integrity.down.sql"},
+	{up: "000003_outbox_publisher.up.sql", down: "000003_outbox_publisher.down.sql"},
 }
 
 // Apply runs pending Ledger migrations under a context-specific advisory lock.

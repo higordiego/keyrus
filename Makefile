@@ -19,7 +19,7 @@ TRIVY_VERSION := v0.72.0
 
 export PATH := $(TOOLS_BIN):$(PATH)
 
-.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test bdd-parse reports ci policy security build-validation full-validation clean-reports
+.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test bdd-parse reports ci policy security integration build-validation full-validation clean-reports
 
 all: ci
 
@@ -100,6 +100,9 @@ policy: check-go-version
 
 security: check-go-version
 	./scripts/run-gate.sh security security ./scripts/security-gate.sh "$(GOVULNCHECK)" "$(GITLEAKS)" "$(TRIVY)"
+
+integration: check-go-version
+	./scripts/run-gate.sh integration integration go test -race -count=1 ./services/ledger/internal/outbox
 
 build-validation: check-go-version
 	./scripts/run-gate.sh build build-validation ./scripts/build-validation-gate.sh "$(TRIVY)"

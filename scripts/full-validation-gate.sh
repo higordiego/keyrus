@@ -2,7 +2,7 @@
 set -u
 
 status=0
-for gate in policy ci security build-validation; do
+for gate in policy ci security integration build-validation; do
 	echo "==> make $gate"
 	make "$gate"
 	gate_status=$?
