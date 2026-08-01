@@ -20,10 +20,15 @@ type migration struct {
 	down string
 }
 
-var ordered = []migration{{
-	up:   "000001_ledger_core.up.sql",
-	down: "000001_ledger_core.down.sql",
-}}
+const (
+	legacyMigration = "000001_ledger_core.up.sql"
+	legacyChecksum  = "7df6b8f3cc82408ae9c53e99d7e7667e55a0431bc54e8de8e8cf7238989d4417"
+)
+
+var ordered = []migration{
+	{up: legacyMigration, down: "000001_ledger_core.down.sql"},
+	{up: "000002_ledger_integrity.up.sql", down: "000002_ledger_integrity.down.sql"},
+}
 
 // Apply runs pending Ledger migrations under a context-specific advisory lock.
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
@@ -32,17 +37,30 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("begin ledger migrations: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	legacySQL, err := files.ReadFile(legacyMigration)
+	if err != nil {
+		return fmt.Errorf("read published ledger migration %s: %w", legacyMigration, err)
+	}
+	if migrationChecksum(legacySQL) != legacyChecksum {
+		return fmt.Errorf("published ledger migration %s was modified", legacyMigration)
+	}
 	if _, err := tx.Exec(ctx, `
 CREATE SCHEMA IF NOT EXISTS ledger;
 CREATE TABLE IF NOT EXISTS ledger.schema_migration (
     version text PRIMARY KEY,
-    checksum character(64) NOT NULL,
     applied_at timestamptz NOT NULL DEFAULT now()
 );
-ALTER TABLE ledger.schema_migration
-    ADD COLUMN IF NOT EXISTS checksum character(64);
 SELECT pg_advisory_xact_lock(hashtext('ledger:schema-migrations'));`); err != nil {
 		return fmt.Errorf("prepare ledger migrations: %w", err)
+	}
+	hasChecksum, err := trackerHasChecksum(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !hasChecksum {
+		if err := validateLegacyTracker(ctx, tx); err != nil {
+			return err
+		}
 	}
 	for _, migration := range ordered {
 		sql, err := files.ReadFile(migration.up)
@@ -50,30 +68,130 @@ SELECT pg_advisory_xact_lock(hashtext('ledger:schema-migrations'));`); err != ni
 			return fmt.Errorf("read ledger migration %s: %w", migration.up, err)
 		}
 		checksum := migrationChecksum(sql)
-		var storedChecksum *string
-		err = tx.QueryRow(ctx,
-			`SELECT checksum FROM ledger.schema_migration WHERE version = $1`, migration.up,
-		).Scan(&storedChecksum)
-		if err == nil {
-			if storedChecksum == nil || *storedChecksum != checksum {
-				return fmt.Errorf("ledger migration %s checksum mismatch", migration.up)
+		if hasChecksum {
+			var storedChecksum string
+			err = tx.QueryRow(ctx,
+				`SELECT checksum FROM ledger.schema_migration WHERE version = $1`, migration.up,
+			).Scan(&storedChecksum)
+			if err == nil {
+				if storedChecksum != checksum {
+					return fmt.Errorf("ledger migration %s checksum mismatch", migration.up)
+				}
+				continue
 			}
-			continue
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("read ledger migration %s: %w", migration.up, err)
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("read ledger migration %s: %w", migration.up, err)
+			}
+		} else {
+			var applied bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS (SELECT 1 FROM ledger.schema_migration WHERE version = $1)`, migration.up,
+			).Scan(&applied); err != nil {
+				return fmt.Errorf("read legacy ledger migration %s: %w", migration.up, err)
+			}
+			if applied {
+				continue
+			}
 		}
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply ledger migration %s: %w", migration.up, err)
 		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO ledger.schema_migration (version, checksum) VALUES ($1, $2)`, migration.up, checksum,
-		); err != nil {
+		hasChecksum, err = trackerHasChecksum(ctx, tx)
+		if err != nil {
+			return err
+		}
+		insert := `INSERT INTO ledger.schema_migration (version) VALUES ($1)`
+		arguments := []any{migration.up}
+		if hasChecksum {
+			insert = `INSERT INTO ledger.schema_migration (version, checksum) VALUES ($1, $2)`
+			arguments = append(arguments, checksum)
+		}
+		if _, err := tx.Exec(ctx, insert, arguments...); err != nil {
 			return fmt.Errorf("record ledger migration %s: %w", migration.up, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit ledger migrations: %w", err)
+	}
+	return nil
+}
+
+func trackerHasChecksum(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'ledger'
+      AND table_name = 'schema_migration'
+      AND column_name = 'checksum'
+)`).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect ledger migration checksum column: %w", err)
+	}
+	return exists, nil
+}
+
+func validateLegacyTracker(ctx context.Context, tx pgx.Tx) error {
+	var count int
+	var first string
+	if err := tx.QueryRow(ctx, `
+SELECT count(*), COALESCE(min(version), '')
+FROM ledger.schema_migration`).Scan(&count, &first); err != nil {
+		return fmt.Errorf("inspect legacy ledger migration tracker: %w", err)
+	}
+	if count == 0 {
+		return nil
+	}
+	if count != 1 || first != legacyMigration {
+		return fmt.Errorf("unrecognized legacy ledger migration state")
+	}
+	var trusted bool
+	if err := tx.QueryRow(ctx, `
+SELECT to_regclass('ledger.merchant_position') IS NOT NULL
+   AND to_regclass('ledger.ledger_entry') IS NOT NULL
+   AND to_regclass('ledger.idempotency_record') IS NOT NULL
+   AND to_regclass('ledger.outbox_event') IS NOT NULL
+   AND EXISTS (
+       SELECT 1 FROM pg_constraint
+       WHERE conrelid = to_regclass('ledger.idempotency_record')
+         AND conname = 'idempotency_record_entry_id_fkey'
+         AND contype = 'f'
+   )
+   AND EXISTS (
+       SELECT 1 FROM pg_constraint
+       WHERE conrelid = to_regclass('ledger.outbox_event')
+         AND conname = 'outbox_event_aggregate_id_fkey'
+         AND contype = 'f'
+   )
+   AND EXISTS (
+       SELECT 1 FROM pg_constraint
+       WHERE conrelid = to_regclass('ledger.outbox_event')
+         AND conname = 'outbox_event_merchant_position_fk'
+         AND contype = 'f'
+   )
+   AND EXISTS (
+       SELECT 1 FROM pg_trigger
+       WHERE tgrelid = to_regclass('ledger.ledger_entry')
+         AND tgname = 'ledger_entry_immutable'
+         AND NOT tgisinternal
+   )
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_constraint
+       WHERE conrelid IN (
+           to_regclass('ledger.idempotency_record'),
+           to_regclass('ledger.ledger_entry'),
+           to_regclass('ledger.outbox_event')
+       )
+         AND conname IN (
+           'idempotency_record_entry_same_merchant_fk',
+           'ledger_entry_merchant_id_position_unique',
+           'outbox_event_entry_correlation_fk'
+       )
+   )`).Scan(&trusted); err != nil {
+		return fmt.Errorf("validate legacy ledger schema: %w", err)
+	}
+	if !trusted {
+		return fmt.Errorf("unrecognized legacy ledger schema drift")
 	}
 	return nil
 }
@@ -101,13 +219,19 @@ func RollbackAll(ctx context.Context, pool *pgxpool.Pool) error {
 	); err != nil {
 		return fmt.Errorf("lock destructive ledger rollback: %w", err)
 	}
-	for index := len(ordered) - 1; index >= 0; index-- {
-		migration := ordered[index]
+	hasChecksum, err := trackerHasChecksum(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !hasChecksum {
+		return fmt.Errorf("destructive ledger rollback requires checksum-managed migrations")
+	}
+	for _, migration := range ordered {
 		upSQL, err := files.ReadFile(migration.up)
 		if err != nil {
 			return fmt.Errorf("read ledger migration %s: %w", migration.up, err)
 		}
-		var storedChecksum *string
+		var storedChecksum string
 		err = tx.QueryRow(ctx,
 			`SELECT checksum FROM ledger.schema_migration WHERE version = $1`, migration.up,
 		).Scan(&storedChecksum)
@@ -117,8 +241,21 @@ func RollbackAll(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return fmt.Errorf("read ledger migration %s: %w", migration.up, err)
 		}
-		if storedChecksum == nil || *storedChecksum != migrationChecksum(upSQL) {
+		if storedChecksum != migrationChecksum(upSQL) {
 			return fmt.Errorf("ledger migration %s checksum mismatch", migration.up)
+		}
+	}
+	for index := len(ordered) - 1; index >= 0; index-- {
+		migration := ordered[index]
+		var applied bool
+		err = tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM ledger.schema_migration WHERE version = $1)`, migration.up,
+		).Scan(&applied)
+		if err != nil {
+			return fmt.Errorf("read ledger migration %s: %w", migration.up, err)
+		}
+		if !applied {
+			continue
 		}
 		downSQL, err := files.ReadFile(migration.down)
 		if err != nil {
@@ -127,6 +264,9 @@ func RollbackAll(ctx context.Context, pool *pgxpool.Pool) error {
 		if _, err := tx.Exec(ctx, string(downSQL)); err != nil {
 			return fmt.Errorf("apply destructive ledger rollback %s: %w", migration.down, err)
 		}
+	}
+	if _, err := tx.Exec(ctx, `DROP SCHEMA IF EXISTS ledger`); err != nil {
+		return fmt.Errorf("remove empty ledger schema: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit destructive ledger rollback: %w", err)

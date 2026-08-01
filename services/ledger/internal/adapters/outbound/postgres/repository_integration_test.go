@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"github.com/higordiegoti/keyrus/services/ledger/internal/application"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/domain"
 	"github.com/higordiegoti/keyrus/services/ledger/migrations"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/testcontainers/testcontainers-go"
@@ -27,9 +29,10 @@ import (
 )
 
 const (
-	merchantA        = "018f0000-0000-7000-8000-000000000101"
-	merchantB        = "018f0000-0000-7000-8000-000000000102"
-	validTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	merchantA               = "018f0000-0000-7000-8000-000000000101"
+	merchantB               = "018f0000-0000-7000-8000-000000000102"
+	validTraceparent        = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	published000001Checksum = "7df6b8f3cc82408ae9c53e99d7e7667e55a0431bc54e8de8e8cf7238989d4417"
 )
 
 var (
@@ -748,6 +751,10 @@ func TestEntryReferencesAreTenantAware(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	entryA2, err := service.CreateEntry(ctx, createInput(merchantA, "tenant-fk-a-2", 300))
+	if err != nil {
+		t.Fatal(err)
+	}
 	entryB, err := service.CreateEntry(ctx, createInput(merchantB, "tenant-fk-b", 200))
 	if err != nil {
 		t.Fatal(err)
@@ -773,7 +780,17 @@ INSERT INTO ledger.outbox_event (
 )`, entryB.ID, merchantA, entryA.Position); err == nil {
 		t.Fatal("outbox accepted an aggregate owned by another merchant")
 	}
-	assertCounts(t, 2, 2, 2)
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO ledger.outbox_event (
+    event_id, aggregate_id, merchant_id, merchant_position,
+    event_type, payload, occurred_at
+) VALUES (
+    '018f0000-0000-7000-8000-000000009903', $1, $2, $3,
+    'ledger.entry.position-mismatch.v1', '{}'::jsonb, now()
+)`, entryA.ID, merchantA, entryA2.Position); !isForeignKeyViolation(err) {
+		t.Fatalf("outbox accepted entry ID with another entry's position: %v", err)
+	}
+	assertCounts(t, 3, 3, 3)
 }
 
 func TestMigrationsUpDownUpAndChecksumIntegrity(t *testing.T) {
@@ -809,6 +826,15 @@ SELECT checksum FROM ledger.schema_migration WHERE version = '000001_ledger_core
 	}
 	if len(originalChecksum) != 64 {
 		t.Fatalf("migration checksum should be SHA-256, got %q", originalChecksum)
+	}
+	var appliedMigrations int
+	if err := cyclePool.QueryRow(ctx,
+		`SELECT count(*) FROM ledger.schema_migration`,
+	).Scan(&appliedMigrations); err != nil {
+		t.Fatal(err)
+	}
+	if appliedMigrations != 2 {
+		t.Fatalf("fresh database should apply 000001 and 000002, got %d migrations", appliedMigrations)
 	}
 	if _, err := cyclePool.Exec(ctx, `
 UPDATE ledger.schema_migration SET checksum = repeat('0', 64)
@@ -847,6 +873,235 @@ SELECT checksum FROM ledger.schema_migration WHERE version = '000001_ledger_core
 	if reappliedChecksum != originalChecksum {
 		t.Fatalf("up/down/up checksum changed: first=%s second=%s", originalChecksum, reappliedChecksum)
 	}
+}
+
+func TestMigrationUpgradeFromPublished000001PreservesData(t *testing.T) {
+	ctx := context.Background()
+	upgradePool := newDisposableDatabase(t, "ledger_migration_upgrade")
+	installPublished000001(t, upgradePool)
+
+	const (
+		entryA1 = "018f0000-0000-7000-8000-000000008101"
+		entryA2 = "018f0000-0000-7000-8000-000000008102"
+		entryB1 = "018f0000-0000-7000-8000-000000008201"
+	)
+	if _, err := upgradePool.Exec(ctx, `
+INSERT INTO ledger.merchant_position (merchant_id, last_position, updated_at)
+VALUES ($1, 2, '2026-07-31T12:00:00Z'), ($2, 1, '2026-07-31T12:00:00Z');
+INSERT INTO ledger.ledger_entry (
+    id, merchant_id, position, entry_type, amount_minor, currency,
+    business_date, description, confirmed_at, original_entry_id
+) VALUES
+    ($3, $1, 1, 'credit', 12345, 'BRL', '2026-07-31', 'legacy-a1', '2026-07-31T12:00:00Z', NULL),
+    ($4, $1, 2, 'debit', 345, 'BRL', '2026-07-31', 'legacy-a2', '2026-07-31T12:01:00Z', NULL),
+    ($5, $2, 1, 'credit', 999, 'BRL', '2026-07-31', 'legacy-b1', '2026-07-31T12:02:00Z', NULL);
+INSERT INTO ledger.idempotency_record (
+    attempt_id, merchant_id, operation, key_hash, request_hash,
+    entry_id, response_payload, created_at, completed_at
+) VALUES (
+    '018f0000-0000-7000-8000-000000008301', $1, 'create_entry',
+    decode(repeat('11', 32), 'hex'), decode(repeat('22', 32), 'hex'),
+    $3, '{"entry_id":"018f0000-0000-7000-8000-000000008101"}'::jsonb,
+    '2026-07-31T12:00:00Z', '2026-07-31T12:00:00Z'
+);
+INSERT INTO ledger.outbox_event (
+    event_id, aggregate_id, merchant_id, merchant_position,
+    event_type, payload, occurred_at, created_at, available_at
+) VALUES (
+    '018f0000-0000-7000-8000-000000008401', $3, $1, 1,
+    'ledger.entry.confirmed.v1', '{"legacy":true}'::jsonb,
+    '2026-07-31T12:00:00Z', '2026-07-31T12:00:00Z', '2026-07-31T12:00:00Z'
+);`, merchantA, merchantB, entryA1, entryA2, entryB1); err != nil {
+		t.Fatalf("seed published 000001 data: %v", err)
+	}
+
+	if err := migrations.Apply(ctx, upgradePool); err != nil {
+		t.Fatalf("upgrade published 000001 to 000002: %v", err)
+	}
+	if err := migrations.Apply(ctx, upgradePool); err != nil {
+		t.Fatalf("second upgrade apply should be idempotent: %v", err)
+	}
+
+	var entries, attempts, events int
+	var amount, eventPosition int64
+	var responseEntryID, eventAggregateID, responsePayload, eventPayload string
+	if err := upgradePool.QueryRow(ctx, `SELECT count(*) FROM ledger.ledger_entry`).Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if err := upgradePool.QueryRow(ctx, `
+	SELECT count(*), min(entry_id::text), min(response_payload::text)
+	FROM ledger.idempotency_record`).Scan(&attempts, &responseEntryID, &responsePayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := upgradePool.QueryRow(ctx, `
+	SELECT count(*), min(aggregate_id::text), min(merchant_position), min(payload::text)
+	FROM ledger.outbox_event`).Scan(&events, &eventAggregateID, &eventPosition, &eventPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := upgradePool.QueryRow(ctx,
+		`SELECT amount_minor FROM ledger.ledger_entry WHERE id = $1`, entryA1,
+	).Scan(&amount); err != nil {
+		t.Fatal(err)
+	}
+	if entries != 3 || attempts != 1 || events != 1 || amount != 12345 ||
+		responseEntryID != entryA1 || eventAggregateID != entryA1 || eventPosition != 1 ||
+		responsePayload != `{"entry_id": "018f0000-0000-7000-8000-000000008101"}` ||
+		eventPayload != `{"legacy": true}` {
+		t.Fatalf("upgrade changed legacy data: entries=%d attempts=%d events=%d amount=%d response_entry=%s event_entry=%s event_position=%d response=%s payload=%s",
+			entries, attempts, events, amount, responseEntryID, eventAggregateID, eventPosition, responsePayload, eventPayload)
+	}
+
+	rows, err := upgradePool.Query(ctx, `
+SELECT version, checksum FROM ledger.schema_migration ORDER BY version`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	checksums := map[string]string{}
+	for rows.Next() {
+		var version, checksum string
+		if err := rows.Scan(&version, &checksum); err != nil {
+			t.Fatal(err)
+		}
+		checksums[version] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if checksums["000001_ledger_core.up.sql"] != published000001Checksum ||
+		len(checksums["000002_ledger_integrity.up.sql"]) != 64 || len(checksums) != 2 {
+		t.Fatalf("unexpected upgraded migration checksums: %+v", checksums)
+	}
+
+	if _, err := upgradePool.Exec(ctx, `
+INSERT INTO ledger.idempotency_record (
+    attempt_id, merchant_id, operation, key_hash, request_hash,
+    entry_id, response_payload, created_at, completed_at
+) VALUES (
+    '018f0000-0000-7000-8000-000000008302', $1, 'create_entry',
+    decode(repeat('33', 32), 'hex'), decode(repeat('44', 32), 'hex'),
+    $2, '{}'::jsonb, now(), now()
+)`, merchantB, entryA1); !isForeignKeyViolation(err) {
+		t.Fatalf("upgraded idempotency accepted cross-merchant entry: %v", err)
+	}
+	if _, err := upgradePool.Exec(ctx, `
+INSERT INTO ledger.outbox_event (
+    event_id, aggregate_id, merchant_id, merchant_position,
+    event_type, payload, occurred_at
+) VALUES (
+    '018f0000-0000-7000-8000-000000008402', $1, $2, 1,
+    'ledger.entry.cross-tenant.v1', '{}'::jsonb, now()
+)`, entryB1, merchantA); !isForeignKeyViolation(err) {
+		t.Fatalf("upgraded outbox accepted cross-merchant aggregate: %v", err)
+	}
+	if _, err := upgradePool.Exec(ctx, `
+INSERT INTO ledger.outbox_event (
+    event_id, aggregate_id, merchant_id, merchant_position,
+    event_type, payload, occurred_at
+) VALUES (
+    '018f0000-0000-7000-8000-000000008403', $1, $2, 2,
+    'ledger.entry.position-mismatch.v1', '{}'::jsonb, now()
+)`, entryA1, merchantA); !isForeignKeyViolation(err) {
+		t.Fatalf("upgraded outbox accepted entry ID with another entry's position: %v", err)
+	}
+}
+
+func TestMigrationUpgradeRejectsUnrecognizedLegacyDrift(t *testing.T) {
+	ctx := context.Background()
+	driftPool := newDisposableDatabase(t, "ledger_migration_legacy_drift")
+	installPublished000001(t, driftPool)
+	if _, err := driftPool.Exec(ctx, `
+ALTER TABLE ledger.outbox_event
+DROP CONSTRAINT outbox_event_aggregate_id_fkey`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrations.Apply(ctx, driftPool); err == nil ||
+		!strings.Contains(err.Error(), "unrecognized legacy ledger schema drift") {
+		t.Fatalf("migration accepted unrecognized legacy drift: %v", err)
+	}
+	var checksumColumnExists bool
+	if err := driftPool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'ledger'
+      AND table_name = 'schema_migration'
+      AND column_name = 'checksum'
+)`).Scan(&checksumColumnExists); err != nil {
+		t.Fatal(err)
+	}
+	if checksumColumnExists {
+		t.Fatal("failed legacy upgrade left checksum metadata behind")
+	}
+}
+
+func newDisposableDatabase(t *testing.T, database string) *pgxpool.Pool {
+	t.Helper()
+	ctx := context.Background()
+	adminPool, err := openTestPool(ctx, testHostPort, "ledger_test", "ledger_test", "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adminPool.Exec(ctx, "DROP DATABASE IF EXISTS "+database+" WITH (FORCE)"); err != nil {
+		adminPool.Close()
+		t.Fatal(err)
+	}
+	if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+database); err != nil {
+		adminPool.Close()
+		t.Fatal(err)
+	}
+	pool, err := openTestPool(ctx, testHostPort, "ledger_test", "ledger_test", database)
+	if err != nil {
+		_, _ = adminPool.Exec(ctx, "DROP DATABASE IF EXISTS "+database+" WITH (FORCE)")
+		adminPool.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE IF EXISTS "+database+" WITH (FORCE)")
+		adminPool.Close()
+	})
+	return pool
+}
+
+func installPublished000001(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve integration test path")
+	}
+	migrationPath := filepath.Clean(filepath.Join(
+		filepath.Dir(currentFile), "../../../../migrations/000001_ledger_core.up.sql",
+	))
+	migrationSQL, err := os.ReadFile(migrationPath)
+	if err != nil {
+		t.Fatalf("read published 000001 fixture: %v", err)
+	}
+	checksum := sha256.Sum256(migrationSQL)
+	if fmt.Sprintf("%x", checksum) != published000001Checksum {
+		t.Fatalf("000001 no longer matches the published 37596ee snapshot: %x", checksum)
+	}
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+CREATE SCHEMA ledger;
+CREATE TABLE ledger.schema_migration (
+    version text PRIMARY KEY,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);`); err != nil {
+		t.Fatalf("prepare legacy migration tracker: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(migrationSQL)); err != nil {
+		t.Fatalf("apply published 000001 snapshot: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO ledger.schema_migration (version)
+VALUES ('000001_ledger_core.up.sql')`); err != nil {
+		t.Fatalf("record published 000001 snapshot: %v", err)
+	}
+}
+
+func isForeignKeyViolation(err error) bool {
+	var postgresError *pgconn.PgError
+	return errors.As(err, &postgresError) && postgresError.Code == "23503"
 }
 
 func assertOutboxMatchesVersionedSchema(t *testing.T, expected int) {

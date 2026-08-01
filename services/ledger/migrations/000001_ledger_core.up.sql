@@ -52,14 +52,11 @@ CREATE TABLE ledger.idempotency_record (
     operation text NOT NULL CHECK (operation IN ('create_entry', 'reverse_entry')),
     key_hash bytea NOT NULL CHECK (octet_length(key_hash) = 32),
     request_hash bytea NOT NULL CHECK (octet_length(request_hash) = 32),
-    entry_id uuid NULL,
+    entry_id uuid NULL REFERENCES ledger.ledger_entry (id),
     response_payload jsonb NULL,
     created_at timestamptz NOT NULL,
     completed_at timestamptz NULL,
     CONSTRAINT idempotency_record_scope_unique UNIQUE (merchant_id, operation, key_hash),
-    CONSTRAINT idempotency_record_entry_same_merchant_fk
-        FOREIGN KEY (merchant_id, entry_id)
-        REFERENCES ledger.ledger_entry (merchant_id, id),
     CONSTRAINT idempotency_record_completion_consistent CHECK (
         (entry_id IS NULL AND response_payload IS NULL AND completed_at IS NULL)
         OR
@@ -71,7 +68,7 @@ CREATE INDEX idempotency_record_merchant_created_idx
 
 CREATE TABLE ledger.outbox_event (
     event_id uuid PRIMARY KEY,
-    aggregate_id uuid NOT NULL,
+    aggregate_id uuid NOT NULL REFERENCES ledger.ledger_entry (id),
     merchant_id uuid NOT NULL,
     merchant_position bigint NOT NULL CHECK (merchant_position > 0),
     event_type text NOT NULL,
@@ -83,9 +80,6 @@ CREATE TABLE ledger.outbox_event (
     attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     last_error text NULL,
     CONSTRAINT outbox_event_aggregate_type_unique UNIQUE (aggregate_id, event_type),
-    CONSTRAINT outbox_event_aggregate_same_merchant_fk
-        FOREIGN KEY (merchant_id, aggregate_id)
-        REFERENCES ledger.ledger_entry (merchant_id, id),
     CONSTRAINT outbox_event_merchant_position_fk
         FOREIGN KEY (merchant_id, merchant_position)
         REFERENCES ledger.ledger_entry (merchant_id, position)
