@@ -277,7 +277,7 @@ func TestInternalCallPropagatesTraceContextAndBoundsTheDeadline(t *testing.T) {
 	// identity on the incoming metadata; the client interceptor forwards it.
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
 		tracecontext.TraceParentHeader, span.String(),
-		tracecontext.TraceStateHeader, "vendor=abc",
+		tracecontext.TraceStateHeader, tracecontext.PublicTraceState,
 	))
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -300,8 +300,31 @@ func TestInternalCallPropagatesTraceContextAndBoundsTheDeadline(t *testing.T) {
 	if observed.TraceID != span.TraceID {
 		t.Errorf("trace id: got %q, want %q", observed.TraceID, span.TraceID)
 	}
-	if calls[0].TraceState != "vendor=abc" {
-		t.Errorf("tracestate: got %q, want %q", calls[0].TraceState, "vendor=abc")
+	if calls[0].TraceState != tracecontext.PublicTraceState {
+		t.Errorf("tracestate: got %q, want %q", calls[0].TraceState, tracecontext.PublicTraceState)
+	}
+}
+
+func TestInternalCallDropsUntrustedTraceStateWithoutLosingTraceparent(t *testing.T) {
+	t.Parallel()
+	fixture := startPrivateSurface(t, defaultOptions())
+	connection := fixture.connect(t, fixture.serviceToken(t, auth.ScopeLedgerInternal))
+	span, err := tracecontext.NewSpanContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		tracecontext.TraceParentHeader, span.String(),
+		tracecontext.TraceStateHeader, "cashflow=e2e-command-key-e2e-sensitive-description-987654321",
+	))
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := internalgrpc.GetWatermark(ctx, connection, merchantID); err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	calls := fixture.harness.ObservedCalls()
+	if len(calls) != 1 || calls[0].TraceParent != span.String() || calls[0].TraceState != "" {
+		t.Fatalf("untrusted tracestate policy: calls=%+v", calls)
 	}
 }
 
