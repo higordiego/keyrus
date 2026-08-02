@@ -84,11 +84,16 @@ lint: proto-lint
 test:
 	go test -race -count=1 ./...
 
-integration:
+integration: check-go-version
 	@mkdir -p evidence/reports/integration
 	@report=evidence/reports/integration/postgresql.log; \
 	go test -race -count=1 -v ./services/consolidation/internal/adapters/outbound/postgres ./test/bdd > "$$report" 2>&1; \
-	status=$$?; cat "$$report"; exit $$status
+	consolidation_status=$$?; \
+	cat "$$report"; \
+	status=0; \
+	test "$$consolidation_status" -eq 0 || status=1; \
+	./scripts/run-gate.sh integration ledger-outbox go test -race -count=1 ./services/ledger/internal/outbox || status=1; \
+	exit "$$status"
 
 bdd:
 	go test -race -count=1 -v ./test/bdd

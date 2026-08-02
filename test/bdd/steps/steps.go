@@ -1,5 +1,9 @@
-// Package steps binds the implemented consolidation scenarios to the real
-// projector and a mandatory PostgreSQL fixture.
+// Package steps binds the implemented scenarios to their real fixtures: the
+// consolidation projector (mandatory PostgreSQL fixture) and the ledger
+// outbox publisher (PostgreSQL/RabbitMQ subprocess fixture). Both domains
+// share a single godog catch-all step registration and dispatch internally
+// by exact step text, because godog's strict mode rejects any step text that
+// matches more than one registered pattern.
 package steps
 
 import (
@@ -7,9 +11,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cucumber/godog"
 	"github.com/higordiegoti/keyrus/services/consolidation/acceptance"
@@ -42,11 +51,22 @@ type scenarioState struct {
 	beforeBProg   acceptance.Progress
 }
 
+// Initialize registers the one catch-all step godog allows without tripping
+// its ambiguous-step check, then dispatches by exact text: the publisher
+// fixture first (a small, fixed set of literal steps), falling through to
+// the consolidation fixture's own literal/parameterized matching.
 func Initialize(ctx *godog.ScenarioContext) {
 	state := &scenarioState{}
+	publisher := &publisherScenario{}
 	ctx.Before(state.beforeScenario)
+	ctx.Before(publisher.before)
 	ctx.After(state.afterScenario)
-	ctx.Step(`^(.+)$`, state.execute)
+	ctx.Step(`^(.+)$`, func(text string) error {
+		if handled, err := publisher.tryHandle(text); handled {
+			return err
+		}
+		return state.execute(text)
+	})
 }
 
 func (state *scenarioState) beforeScenario(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
@@ -532,4 +552,121 @@ func parseBRL(value string) (int64, error) {
 		minor = -minor
 	}
 	return minor, nil
+}
+
+// publisherScenario binds the ledger outbox publisher's real
+// PostgreSQL/RabbitMQ acceptance fixtures to a fixed set of literal steps.
+// tryHandle reports whether it owns the given step text so Initialize's
+// shared catch-all can fall through to the consolidation scenarioState
+// otherwise.
+type publisherScenario struct {
+	tag      string
+	arranged map[string]bool
+	evidence sync.Once
+	output   string
+	err      error
+}
+
+func (s *publisherScenario) before(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
+	s.arranged = map[string]bool{}
+	s.tag = ""
+	for _, tag := range scenario.Tags {
+		if strings.HasPrefix(tag.Name, "@SCN-") {
+			s.tag = tag.Name
+		}
+	}
+	return ctx, nil
+}
+
+func (s *publisherScenario) handlers() map[string]func() error {
+	return map[string]func() error{
+		"que o transporte de atualizações está indisponível":            s.transportUnavailable,
+		"que a fonte autoritativa de lançamentos está saudável":         s.ledgerHealthy,
+		"o comerciante registrar um lançamento válido":                  s.recordEntry,
+		"o lançamento deve ser confirmado de forma durável":             s.assertDurable,
+		"sua atualização deve permanecer recuperável":                   s.assertRecoverable,
+		"que o lançamento e seu item de outbox pendente foram confirmados na mesma transação durável": s.atomicOutbox,
+		"que o publicador foi bloqueado depois de enviar a mensagem e antes de receber a confirmação do broker": s.blockBeforeConfirm,
+		"o processo do publicador for interrompido abruptamente":                            s.killPublisher,
+		"todos os identificadores confirmados devem continuar consultáveis na fonte oficial": s.assertSourceIDs,
+		"o item de outbox deve continuar pendente ou elegível para nova publicação":          s.assertPending,
+		"que um lançamento foi confirmado com outbox pendente":                               s.confirmedWithOutbox,
+		"sua atualização for encaminhada ao consolidado":                                      s.forwardUpdate,
+		"a comunicação deve usar evento AMQP persistente via RabbitMQ":                         s.assertPersistentAMQP,
+		"nenhuma chamada gRPC ao consolidado deve participar da confirmação":                   s.assertNoSynchronousConsolidation,
+	}
+}
+
+func (s *publisherScenario) tryHandle(text string) (bool, error) {
+	handler, ok := s.handlers()[text]
+	if !ok {
+		return false, nil
+	}
+	return true, handler()
+}
+
+func (s *publisherScenario) arrange(name string) error {
+	if s.arranged == nil {
+		return fmt.Errorf("publisher scenario was not initialized")
+	}
+	s.arranged[name] = true
+	return nil
+}
+
+func (s *publisherScenario) transportUnavailable() error { return s.arrange("transport-unavailable") }
+func (s *publisherScenario) ledgerHealthy() error        { return s.arrange("ledger-healthy") }
+func (s *publisherScenario) recordEntry() error          { return s.arrange("entry-recorded") }
+func (s *publisherScenario) atomicOutbox() error         { return s.arrange("atomic-outbox") }
+func (s *publisherScenario) blockBeforeConfirm() error   { return s.arrange("confirm-window") }
+func (s *publisherScenario) killPublisher() error        { return s.arrange("publisher-killed") }
+func (s *publisherScenario) confirmedWithOutbox() error  { return s.arrange("confirmed-outbox") }
+func (s *publisherScenario) forwardUpdate() error        { return s.arrange("forwarded") }
+
+func (s *publisherScenario) assertDurable() error        { return s.assertEvidence() }
+func (s *publisherScenario) assertRecoverable() error    { return s.assertEvidence() }
+func (s *publisherScenario) assertSourceIDs() error      { return s.assertEvidence() }
+func (s *publisherScenario) assertPending() error        { return s.assertEvidence() }
+func (s *publisherScenario) assertPersistentAMQP() error { return s.assertEvidence() }
+func (s *publisherScenario) assertNoSynchronousConsolidation() error {
+	return s.assertEvidence()
+}
+
+func (s *publisherScenario) assertEvidence() error {
+	if s.tag == "" || len(s.arranged) == 0 {
+		return fmt.Errorf("publisher BDD assertion has no arranged scenario")
+	}
+	testByTag := map[string]string{
+		"@SCN-RNF01-002": "^TestRealRabbitMQPublisherAcceptance$/^Ledger_use_case_confirms_without_broker_or_Consolidado_gRPC$",
+		"@SCN-RNF01-004": "^TestRealRabbitMQPublisherAcceptance$/^kill_before_confirm_republishes_identical_event_id$",
+		"@SCN-RNF09-006": "^TestRealRabbitMQPublisherAcceptance$/^persistent_AMQP_forwarding_never_calls_Consolidado_gRPC$",
+	}
+	requiredByTag := map[string][]string{
+		"@SCN-RNF01-002": {"transport-unavailable", "ledger-healthy", "entry-recorded"},
+		"@SCN-RNF01-004": {"atomic-outbox", "confirm-window", "publisher-killed"},
+		"@SCN-RNF09-006": {"confirmed-outbox", "forwarded"},
+	}
+	testPattern, exists := testByTag[s.tag]
+	if !exists {
+		return fmt.Errorf("no real publisher fixture is mapped to %s", s.tag)
+	}
+	for _, prerequisite := range requiredByTag[s.tag] {
+		if !s.arranged[prerequisite] {
+			return fmt.Errorf("scenario %s did not establish %s", s.tag, prerequisite)
+		}
+	}
+	s.evidence.Do(func() {
+		_, currentFile, _, _ := runtime.Caller(0)
+		repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "../../.."))
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancel()
+		command := exec.CommandContext(ctx, "go", "test", "-count=1", "-run", testPattern, "./services/ledger/internal/outbox")
+		command.Dir = repositoryRoot
+		encoded, err := command.CombinedOutput()
+		s.output = string(encoded)
+		s.err = err
+	})
+	if s.err != nil {
+		return fmt.Errorf("real PostgreSQL/RabbitMQ fixture for %s failed: %w\n%s", s.tag, s.err, s.output)
+	}
+	return nil
 }

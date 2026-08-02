@@ -9,6 +9,8 @@ longer matches its recorded checksum.
 tenant-aware references without recreating tables, and correlates each outbox
 aggregate ID with the position of that same entry. A legacy database is accepted
 only when its tracker and critical `000001` constraints match the trusted state.
+`000003_outbox_publisher` adds the expiring lease used by concurrent publishers;
+the financial event and its stable `event_id` remain unchanged.
 
 `RollbackAll` and the `*.down.sql` files are **destructive**: they remove the
 entire `ledger` schema, including financial entries, idempotency responses and
@@ -38,4 +40,12 @@ GRANT SELECT, INSERT ON ledger.outbox_event TO ledger_runtime;
 The column-level `UPDATE (id)` privilege is needed by PostgreSQL for
 `SELECT ... FOR UPDATE` during reversal serialization. The immutable-row trigger
 still rejects every actual `UPDATE` or `DELETE` against `ledger_entry`. Publisher
-grants are separate and intentionally outside T03A.
+grants are deliberately separate:
+
+```sql
+GRANT USAGE ON SCHEMA ledger TO outbox_publisher;
+GRANT SELECT ON ledger.outbox_event TO outbox_publisher;
+GRANT UPDATE (
+    available_at, published_at, attempts, last_error, lease_owner, lease_until
+) ON ledger.outbox_event TO outbox_publisher;
+```
