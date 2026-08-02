@@ -3,8 +3,6 @@ package steps
 import (
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/cucumber/godog"
@@ -80,8 +78,9 @@ type world struct {
 	logOutput    string
 }
 
-func newWorld() *world {
+func newWorld(evidence runtimeevidence.Evidence) *world {
 	return &world{
+		evidence: evidence,
 		service: protectedapi.New(map[string]string{
 			resourceOfA: merchantA,
 			resourceOfB: merchantB,
@@ -90,13 +89,12 @@ func newWorld() *world {
 	}
 }
 
+// prepare binds the scenario to the evidence the runner attested for this run.
+// The evidence is injected, never read from the environment, so no file placed
+// beside the suite can reach a binding.
 func (w *world) prepare(scenario *godog.Scenario) error {
-	evidence, err := runtimeevidence.LoadForSource(os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE"), filepath.Join("..", ".."))
-	if err != nil {
-		return fmt.Errorf("load real runtime evidence: %w", err)
-	}
 	for _, tag := range scenario.Tags {
-		if _, present := evidence.Scenarios[tag.Name]; present {
+		if _, present := w.evidence.Scenarios[tag.Name]; present {
 			w.scenarioTag = tag.Name
 			break
 		}
@@ -104,13 +102,35 @@ func (w *world) prepare(scenario *godog.Scenario) error {
 	if w.scenarioTag == "" {
 		return fmt.Errorf("scenario %q has no real runtime evidence", scenario.Name)
 	}
-	w.evidence = evidence
 	w.caseID = runtimeevidence.DefaultCase
 	return nil
 }
 
+// require asserts the oracle exists and carries every observation the matrix
+// demands with a non-empty measured value.
 func (w *world) require(oracle string) error {
-	return runtimeevidence.Require(w.evidence, w.scenarioTag, w.caseID, oracle)
+	_, err := runtimeevidence.Require(w.evidence, w.scenarioTag, w.caseID, oracle)
+	return err
+}
+
+// requireValues asserts the exact values the runtime must have observed.
+func (w *world) requireValues(oracle string, wanted map[string]string) error {
+	for key, want := range wanted {
+		if err := runtimeevidence.RequireValue(w.evidence, w.scenarioTag, w.caseID, oracle, key, want); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// observation returns one measured value after the oracle passed its structural
+// checks, for bindings whose expectation is relational rather than literal.
+func (w *world) observation(oracle, key string) (string, error) {
+	result, err := runtimeevidence.Require(w.evidence, w.scenarioTag, w.caseID, oracle)
+	if err != nil {
+		return "", err
+	}
+	return result.Observations[key], nil
 }
 
 func (w *world) requireCondition(condition string) error {

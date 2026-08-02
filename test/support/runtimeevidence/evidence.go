@@ -1,9 +1,25 @@
 // Package runtimeevidence carries machine-readable, scenario-specific results
 // from the real T02 container stack into the Godog bindings.
+//
+// Two properties make the artifact usable as acceptance proof.
+//
+// First, an oracle is not a claim: it is a set of named observations whose
+// values were measured against the running stack. The Godog bindings assert on
+// those values, so replacing them with prose or with a placeholder makes the
+// binding fail instead of passing.
+//
+// Second, integrity is attested with a key the file does not carry. The
+// verifying process mints an ephemeral key, hands it only to the real E2E it
+// spawns, and keeps it in memory. A public SHA-256 is still recorded so
+// accidental corruption is reported precisely, but recomputing it cannot make a
+// hand-written file acceptable: without the run key the attestation fails.
 package runtimeevidence
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,16 +33,24 @@ import (
 )
 
 const (
-	SchemaVersion  = 2
-	SuiteVersion   = "t02-edge-identity-runtime-v2"
-	Runtime        = "keycloak+krakend+ledger-image+consolidation-image+otel-collector+fault-backend"
-	DefaultCase    = "default"
+	SchemaVersion = 3
+	SuiteVersion  = "t02-edge-identity-runtime-v3"
+	Runtime       = "keycloak+krakend+bypass-krakend+ledger-image+consolidation-image+otel-collector+fault-backend"
+	DefaultCase   = "default"
+
+	// KeyEnvVar names the ephemeral attestation key handed to the spawned E2E.
+	KeyEnvVar = "CASHFLOW_RUNTIME_EVIDENCE_KEY"
+	// FileEnvVar names the path the spawned E2E must write.
+	FileEnvVar = "CASHFLOW_RUNTIME_EVIDENCE_FILE"
+
+	keyBytes       = 32
 	maxEvidenceAge = 2 * time.Hour
 )
 
+// Oracle is one named observation set measured against the running stack.
 type Oracle struct {
-	Passed bool   `json:"passed"`
-	Detail string `json:"detail"`
+	Detail       string            `json:"detail"`
+	Observations map[string]string `json:"observations"`
 }
 
 type Case struct {
@@ -48,29 +72,115 @@ type Evidence struct {
 	Runtime       string              `json:"runtime"`
 	Scenarios     map[string]Scenario `json:"scenarios"`
 	Integrity     string              `json:"integrity_sha256"`
+	Attestation   string              `json:"attestation_hmac_sha256"`
 }
 
-var required = map[string]map[string][]string{
-	"@SCN-RNF06-001": {DefaultCase: {"valid_identity", "authorized_operation", "merchant_derived", "tenant_limited"}},
+// required declares, for every scenario tag and Gherkin example, the exact
+// oracles the run must produce and the exact observation keys each one must
+// carry. A missing key, an empty value or an unknown name is rejected at write
+// time and again at load time.
+var required = map[string]map[string]map[string][]string{
+	"@SCN-RNF06-001": {DefaultCase: {
+		"valid_identity":       {"issuer", "audience", "merchant_id", "scope"},
+		"authorized_operation": {"edge_status", "path"},
+		"merchant_derived":     {"merchant_id", "entry_id"},
+		"tenant_limited":       {"cross_status", "own_status"},
+	}},
 	"@SCN-RNF06-002": {
-		"ausente":                 {"condition_exercised", "protected_operation", "rejected", "no_effect_or_disclosure"},
-		"expirado":                {"condition_exercised", "protected_operation", "rejected", "no_effect_or_disclosure"},
-		"com assinatura inválida": {"condition_exercised", "protected_operation", "rejected", "no_effect_or_disclosure"},
-		"sem o escopo exigido":    {"condition_exercised", "protected_operation", "rejected", "no_effect_or_disclosure"},
+		"ausente":                 invalidIdentityOracles,
+		"expirado":                invalidIdentityOracles,
+		"com assinatura inválida": invalidIdentityOracles,
+		"sem o escopo exigido":    invalidIdentityOracles,
 	},
-	"@SCN-RNF06-003": {DefaultCase: {"foreign_resource", "access_attempted", "denied", "existence_hidden", "contract_equal", "timing_indistinguishable"}},
+	"@SCN-RNF06-003": {DefaultCase: {
+		"foreign_resource":         {"entry_id", "owner_merchant_id"},
+		"access_attempted":         {"caller_merchant_id", "path"},
+		"denied":                   {"status"},
+		"existence_hidden":         {"body_sha256", "identifiers_disclosed"},
+		"contract_equal":           {"cross_status", "absent_status", "body_sha256"},
+		"timing_indistinguishable": {"samples", "foreign_median", "absent_median", "difference", "tolerance", "separability"},
+	}},
 	"@SCN-RNF08-002": {
-		"ausente":                 {"condition_exercised", "public_edge_call", "rejected_without_forward"},
-		"expirado":                {"condition_exercised", "public_edge_call", "rejected_without_forward"},
-		"com assinatura inválida": {"condition_exercised", "public_edge_call", "rejected_without_forward"},
+		"ausente":                 edgeForwardingOracles,
+		"expirado":                edgeForwardingOracles,
+		"com assinatura inválida": edgeForwardingOracles,
 	},
-	"@SCN-RNF08-003": {DefaultCase: {"direct_private_call", "invalid_operation_jwt", "service_validated", "rejected", "no_commit"}},
-	"@SCN-RNF08-004": {DefaultCase: {"four_headers_sent", "edge_forwarded", "four_headers_preserved"}},
-	"@SCN-RNF08-005": {DefaultCase: {"commit_then_eof", "edge_observed_failure", "single_gateway_invocation", "idempotent_client_replay"}},
-	"@SCN-RNF08-008": {DefaultCase: {"keycloak_internal", "external_probe", "private_paths_absent", "public_oidc_only"}},
-	"@SCN-RNF08-009": {DefaultCase: {"watermark_internal", "missing_service_identity", "ledger_rejected", "no_public_route"}},
-	"@SCN-RNF09-004": {DefaultCase: {"context_and_deadline", "crossed_grpc", "traceparent_correlated", "limits_enforced", "telemetry_redacted"}},
+	"@SCN-RNF08-003": {DefaultCase: {
+		"direct_private_call":   {"target", "bypassed"},
+		"invalid_operation_jwt": {"credential_state"},
+		"service_validated":     {"entrypoint_delta"},
+		"rejected":              {"status"},
+		"no_commit":             {"authenticated_delta"},
+	}},
+	"@SCN-RNF08-004": {DefaultCase: {
+		"four_headers_sent":      {"authorization_sha256", "idempotency_key", "traceparent", "tracestate"},
+		"edge_forwarded":         {"backend_invocations", "edge_image"},
+		"four_headers_preserved": {"authorization_sha256", "idempotency_key", "trace_id", "tracestate"},
+	}},
+	"@SCN-RNF08-005": {DefaultCase: {
+		"commit_then_eof":           {"invocations", "commits", "replays"},
+		"edge_observed_failure":     {"client_transport_error", "gateway_status"},
+		"single_gateway_invocation": {"invocations", "commits"},
+		"idempotent_client_replay":  {"invocations", "commits", "replays", "replay_status"},
+	}},
+	"@SCN-RNF08-008": {DefaultCase: {
+		"keycloak_internal":    {"published_edge_ports", "keycloak_network_alias"},
+		"external_probe":       {"health_probe_path", "health_probe_status", "container_health"},
+		"private_paths_absent": {"paths", "statuses"},
+		"public_oidc_only":     {"authorization_code_flows", "public_oidc_paths"},
+	}},
+	"@SCN-RNF08-009": {DefaultCase: {
+		"watermark_internal":       {"transport", "target"},
+		"missing_service_identity": {"authorization_metadata"},
+		"ledger_rejected":          {"grpc_code"},
+		"no_public_route":          {"config_endpoints", "probe_statuses"},
+	}},
+	"@SCN-RNF09-004": {DefaultCase: {
+		"context_and_deadline":   {"traceparent", "grpc_max_deadline"},
+		"crossed_grpc":           {"trace_id", "span_kinds"},
+		"traceparent_correlated": {"trace_id", "caller_span_id", "lineage"},
+		"limits_enforced":        {"deadline_code", "cancel_code", "oversize_code"},
+		"telemetry_redacted":     {"inspected_containers", "sensitive_values_checked", "matches"},
+	}},
 }
+
+var invalidIdentityOracles = map[string][]string{
+	"condition_exercised":     {"credential_state"},
+	"protected_operation":     {"method", "path"},
+	"rejected":                {"edge_status"},
+	"no_effect_or_disclosure": {"entrypoint_delta", "authenticated_delta", "identifiers_disclosed"},
+}
+
+var edgeForwardingOracles = map[string][]string{
+	"condition_exercised":      {"credential_state"},
+	"public_edge_call":         {"edge_image", "method", "path"},
+	"rejected_without_forward": {"edge_status", "entrypoint_before", "entrypoint_after", "forwarding_control"},
+}
+
+// NewKey mints the ephemeral attestation key. It never reaches disk: the
+// verifying process keeps it in memory and passes it to the E2E it spawns.
+func NewKey() ([]byte, error) {
+	key := make([]byte, keyBytes)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("runtimeevidence: mint attestation key: %w", err)
+	}
+	return key, nil
+}
+
+// KeyFromEnv reads the key handed down by the process that owns the run.
+func KeyFromEnv() ([]byte, error) {
+	encoded := os.Getenv(KeyEnvVar)
+	if encoded == "" {
+		return nil, fmt.Errorf("runtimeevidence: %s is not set", KeyEnvVar)
+	}
+	key, err := hex.DecodeString(encoded)
+	if err != nil || len(key) != keyBytes {
+		return nil, fmt.Errorf("runtimeevidence: %s must be %d hex-encoded bytes", KeyEnvVar, keyBytes)
+	}
+	return key, nil
+}
+
+func EncodeKey(key []byte) string { return hex.EncodeToString(key) }
 
 func New(runID, revision, sourceDigest string, now time.Time) Evidence {
 	return Evidence{
@@ -86,14 +196,19 @@ func New(runID, revision, sourceDigest string, now time.Time) Evidence {
 	}
 }
 
-// Pass records one exact oracle. Unknown scenario/case/oracle combinations are
-// rejected so a generic list or counter cannot accidentally satisfy Godog.
-func (e *Evidence) Pass(tag, caseID, oracle, detail string) error {
-	if !isRequired(tag, caseID, oracle) {
+// Observe records one exact oracle with the values measured against the running
+// stack. Unknown scenario/case/oracle combinations, missing observation keys and
+// empty values are rejected, so a generic list or counter cannot satisfy Godog.
+func (e *Evidence) Observe(tag, caseID, oracle, detail string, observations map[string]string) error {
+	keys, ok := requiredKeys(tag, caseID, oracle)
+	if !ok {
 		return fmt.Errorf("runtimeevidence: unknown oracle %s/%s/%s", tag, caseID, oracle)
 	}
-	if detail == "" {
+	if strings.TrimSpace(detail) == "" {
 		return errors.New("runtimeevidence: oracle detail is required")
+	}
+	if err := checkObservations(tag, caseID, oracle, keys, observations); err != nil {
+		return err
 	}
 	scenario := e.Scenarios[tag]
 	if scenario.Cases == nil {
@@ -103,7 +218,11 @@ func (e *Evidence) Pass(tag, caseID, oracle, detail string) error {
 	if testCase.Oracles == nil {
 		testCase.Oracles = make(map[string]Oracle)
 	}
-	testCase.Oracles[oracle] = Oracle{Passed: true, Detail: detail}
+	recorded := make(map[string]string, len(observations))
+	for key, value := range observations {
+		recorded[key] = value
+	}
+	testCase.Oracles[oracle] = Oracle{Detail: detail, Observations: recorded}
 	scenario.Cases[caseID] = testCase
 	e.Scenarios[tag] = scenario
 	return nil
@@ -111,18 +230,56 @@ func (e *Evidence) Pass(tag, caseID, oracle, detail string) error {
 
 // Require is the literal Godog oracle. Every step names the exact result it
 // needs; a result belonging to another example or scenario cannot satisfy it.
-func Require(e Evidence, tag, caseID, oracle string) error {
-	if !isRequired(tag, caseID, oracle) {
-		return fmt.Errorf("runtimeevidence: binding requested unknown oracle %s/%s/%s", tag, caseID, oracle)
+func Require(e Evidence, tag, caseID, oracle string) (Oracle, error) {
+	keys, ok := requiredKeys(tag, caseID, oracle)
+	if !ok {
+		return Oracle{}, fmt.Errorf("runtimeevidence: binding requested unknown oracle %s/%s/%s", tag, caseID, oracle)
 	}
-	result, ok := e.Scenarios[tag].Cases[caseID].Oracles[oracle]
-	if !ok || !result.Passed || result.Detail == "" {
-		return fmt.Errorf("runtimeevidence: required oracle failed or is absent: %s/%s/%s", tag, caseID, oracle)
+	result, present := e.Scenarios[tag].Cases[caseID].Oracles[oracle]
+	if !present {
+		return Oracle{}, fmt.Errorf("runtimeevidence: required oracle is absent: %s/%s/%s", tag, caseID, oracle)
+	}
+	if strings.TrimSpace(result.Detail) == "" {
+		return Oracle{}, fmt.Errorf("runtimeevidence: oracle %s/%s/%s carries no detail", tag, caseID, oracle)
+	}
+	if err := checkObservations(tag, caseID, oracle, keys, result.Observations); err != nil {
+		return Oracle{}, err
+	}
+	return result, nil
+}
+
+// RequireValue is the strictest binding form: the step names both the oracle and
+// the exact value the runtime must have observed.
+func RequireValue(e Evidence, tag, caseID, oracle, key, want string) error {
+	result, err := Require(e, tag, caseID, oracle)
+	if err != nil {
+		return err
+	}
+	if got := result.Observations[key]; got != want {
+		return fmt.Errorf("runtimeevidence: %s/%s/%s observed %s=%q, want %q", tag, caseID, oracle, key, got, want)
 	}
 	return nil
 }
 
-func Load(path string) (Evidence, error) {
+func checkObservations(tag, caseID, oracle string, keys []string, observations map[string]string) error {
+	if len(observations) != len(keys) {
+		return fmt.Errorf("runtimeevidence: %s/%s/%s carries %d observations, want exactly %v",
+			tag, caseID, oracle, len(observations), keys)
+	}
+	for _, key := range keys {
+		value, present := observations[key]
+		if !present {
+			return fmt.Errorf("runtimeevidence: %s/%s/%s is missing observation %q", tag, caseID, oracle, key)
+		}
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("runtimeevidence: %s/%s/%s observed an empty %q", tag, caseID, oracle, key)
+		}
+	}
+	return nil
+}
+
+// Load verifies provenance, freshness, completeness and the keyed attestation.
+func Load(path string, key []byte) (Evidence, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return Evidence{}, err
@@ -131,7 +288,7 @@ func Load(path string) (Evidence, error) {
 	if err := json.Unmarshal(contents, &evidence); err != nil {
 		return Evidence{}, err
 	}
-	if err := validate(evidence, time.Now().UTC(), true); err != nil {
+	if err := validate(evidence, time.Now().UTC(), key); err != nil {
 		return Evidence{}, err
 	}
 	return evidence, nil
@@ -139,8 +296,8 @@ func Load(path string) (Evidence, error) {
 
 // LoadForSource additionally binds the evidence to the exact checked-out tree.
 // Any source edit makes a prior run unusable and forces a new real E2E.
-func LoadForSource(path, repositoryRoot string) (Evidence, error) {
-	evidence, err := Load(path)
+func LoadForSource(path, repositoryRoot string, key []byte) (Evidence, error) {
+	evidence, err := Load(path, key)
 	if err != nil {
 		return Evidence{}, err
 	}
@@ -154,16 +311,22 @@ func LoadForSource(path, repositoryRoot string) (Evidence, error) {
 	return evidence, nil
 }
 
-func Write(path string, evidence Evidence) error {
+func Write(path string, evidence Evidence, key []byte) error {
 	evidence.Integrity = ""
-	if err := validate(evidence, evidence.GeneratedAt, false); err != nil {
+	evidence.Attestation = ""
+	if err := validate(evidence, evidence.GeneratedAt, nil); err != nil {
 		return err
 	}
-	digest, err := checksum(evidence)
+	if len(key) != keyBytes {
+		return fmt.Errorf("runtimeevidence: attestation key must be %d bytes", keyBytes)
+	}
+	canonical, err := json.Marshal(evidence)
 	if err != nil {
 		return err
 	}
-	evidence.Integrity = digest
+	digest := sha256.Sum256(canonical)
+	evidence.Integrity = hex.EncodeToString(digest[:])
+	evidence.Attestation = attest(canonical, key)
 	contents, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {
 		return err
@@ -171,7 +334,9 @@ func Write(path string, evidence Evidence) error {
 	return os.WriteFile(path, append(contents, '\n'), 0o600)
 }
 
-func validate(e Evidence, now time.Time, verifyIntegrity bool) error {
+// validate checks structure and freshness. When key is nil only the structural
+// half runs, which is what Write needs before it can attest anything.
+func validate(e Evidence, now time.Time, key []byte) error {
 	if e.SchemaVersion != SchemaVersion || e.SuiteVersion != SuiteVersion || e.Runtime != Runtime {
 		return errors.New("runtimeevidence: evidence provenance is invalid")
 	}
@@ -194,43 +359,48 @@ func validate(e Evidence, now time.Time, verifyIntegrity bool) error {
 			if !ok || len(got.Oracles) != len(oracles) {
 				return fmt.Errorf("runtimeevidence: incomplete oracles for %s/%s", tag, caseID)
 			}
-			for _, oracle := range oracles {
-				if err := Require(e, tag, caseID, oracle); err != nil {
+			for oracle := range oracles {
+				if _, err := Require(e, tag, caseID, oracle); err != nil {
 					return err
 				}
 			}
 		}
 	}
-	if verifyIntegrity {
-		provided := e.Integrity
-		e.Integrity = ""
-		expected, err := checksum(e)
-		if err != nil {
-			return err
-		}
-		if provided == "" || provided != expected {
-			return errors.New("runtimeevidence: integrity check failed")
-		}
+	if key == nil {
+		return nil
+	}
+	return verifyAttestation(e, key)
+}
+
+// verifyAttestation recomputes both digests over the canonical form the writer
+// signed. The public SHA-256 reports accidental corruption; only the keyed MAC
+// decides whether the file came from the run this process started.
+func verifyAttestation(e Evidence, key []byte) error {
+	provided, attestation := e.Integrity, e.Attestation
+	e.Integrity, e.Attestation = "", ""
+	canonical, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(canonical)
+	if provided != hex.EncodeToString(digest[:]) {
+		return errors.New("runtimeevidence: integrity check failed")
+	}
+	if subtle.ConstantTimeCompare([]byte(attestation), []byte(attest(canonical, key))) != 1 {
+		return errors.New("runtimeevidence: attestation does not match this run's key; the evidence was not produced by the real E2E started here")
 	}
 	return nil
 }
 
-func checksum(e Evidence) (string, error) {
-	contents, err := json.Marshal(e)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256(contents)
-	return hex.EncodeToString(digest[:]), nil
+func attest(canonical, key []byte) string {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(canonical)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func isRequired(tag, caseID, oracle string) bool {
-	for _, expected := range required[tag][caseID] {
-		if expected == oracle {
-			return true
-		}
-	}
-	return false
+func requiredKeys(tag, caseID, oracle string) ([]string, bool) {
+	keys, ok := required[tag][caseID][oracle]
+	return keys, ok
 }
 
 func isRevision(value string) bool {
@@ -290,4 +460,10 @@ func RequiredKeys() []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// RequiredMatrix reports the exact scenario/case/oracle/observation shape a real
+// run must produce, so the catalog test can assert it without duplicating it.
+func RequiredMatrix() map[string]map[string]map[string][]string {
+	return required
 }

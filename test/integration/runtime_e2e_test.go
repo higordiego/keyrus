@@ -6,10 +6,10 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,9 +26,11 @@ import (
 	"github.com/higordiegoti/keyrus/internal/platform/grpcsecurity"
 	"github.com/higordiegoti/keyrus/internal/platform/identityruntime"
 	"github.com/higordiegoti/keyrus/internal/platform/observability/tracecontext"
+	"github.com/higordiegoti/keyrus/test/support/forwardingoracle"
 	"github.com/higordiegoti/keyrus/test/support/internalgrpc"
 	"github.com/higordiegoti/keyrus/test/support/runtimeevidence"
 	"github.com/higordiegoti/keyrus/test/support/testpki"
+	"github.com/higordiegoti/keyrus/test/support/timingoracle"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -55,29 +56,35 @@ const (
 )
 
 type runtimeStack struct {
-	ctx              context.Context
-	keycloak         testcontainers.Container
-	ledger           testcontainers.Container
-	consolidation    testcontainers.Container
-	krakend          testcontainers.Container
-	collector        testcontainers.Container
-	faultBackend     testcontainers.Container
-	faultKrakend     testcontainers.Container
-	pki              testpki.Bundle
-	keycloakBaseURL  string
-	edgeBaseURL      string
-	faultEdgeBaseURL string
-	faultBackendURL  string
-	ledgerGRPC       string
-	ledgerHTTP       string
-	ledgerMetrics    string
-	directHTTP       *http.Client
-	secrets          map[string]string
+	ctx               context.Context
+	keycloak          testcontainers.Container
+	ledger            testcontainers.Container
+	consolidation     testcontainers.Container
+	krakend           testcontainers.Container
+	collector         testcontainers.Container
+	faultBackend      testcontainers.Container
+	faultKrakend      testcontainers.Container
+	bypassKrakend     testcontainers.Container
+	pki               testpki.Bundle
+	keycloakBaseURL   string
+	edgeBaseURL       string
+	faultEdgeBaseURL  string
+	faultBackendURL   string
+	bypassEdgeBaseURL string
+	ledgerGRPC        string
+	ledgerHTTP        string
+	ledgerMetrics     string
+	directHTTP        *http.Client
+	secrets           map[string]string
 }
 
 func TestRealEdgeIdentityRuntime(t *testing.T) {
 	if os.Getenv("CASHFLOW_SKIP_REAL_E2E") == "1" {
 		t.Skip("real E2E already executed by the gate")
+	}
+	evidenceKey, err := runtimeevidence.KeyFromEnv()
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -98,16 +105,30 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		assertUID(t, ctx, stack.krakend, "65532")
 		assertContainerHealthy(t, ctx, stack.krakend)
 		assertHTTPStatus(t, stack.directHTTP, stack.ledgerMetrics+"/health/ready", http.StatusNoContent)
-		for _, path := range []string{"/health", "/health/ready", "/metrics", "/admin/realms/cashflow/users"} {
+		// /__health is the literal path the review found public: the built-in
+		// KrakenD endpoint bypasses the router entirely. It is now disabled
+		// (router.disable_health in krakend.json), so this exact path, hit the
+		// same way the reviewer reproduced it -- through the published port --
+		// must now return 404 like every other undeclared route.
+		privatePaths := []string{"/__health", "/health", "/health/ready", "/metrics", "/admin/realms/cashflow/users"}
+		statuses := make([]string, 0, len(privatePaths))
+		for _, path := range privatePaths {
 			response := edgeRequest(t, stack, newEdgeClient(t), http.MethodGet, path, nil, "")
+			statuses = append(statuses, strconv.Itoa(response.StatusCode))
 			if response.StatusCode != http.StatusNotFound {
 				t.Fatalf("private edge path %s returned %d, want 404", path, response.StatusCode)
 			}
 			response.Body.Close()
 		}
-		pass(t, &evidence, "@SCN-RNF08-008", runtimeevidence.DefaultCase, "keycloak_internal", "Keycloak is reachable only as an internal KrakenD upstream")
-		pass(t, &evidence, "@SCN-RNF08-008", runtimeevidence.DefaultCase, "external_probe", "external admin, health and metrics paths were requested through the final edge image")
-		pass(t, &evidence, "@SCN-RNF08-008", runtimeevidence.DefaultCase, "private_paths_absent", "all private paths returned the same 404 no-route contract")
+		observe(t, &evidence, "@SCN-RNF08-008", runtimeevidence.DefaultCase, "keycloak_internal",
+			"Keycloak is reachable only as an internal KrakenD upstream",
+			map[string]string{"published_edge_ports": "8080", "keycloak_network_alias": "keycloak"})
+		observe(t, &evidence, "@SCN-RNF08-008", runtimeevidence.DefaultCase, "external_probe",
+			"the disabled built-in health path, admin, health and metrics were requested through the published port of the final edge image",
+			map[string]string{"health_probe_path": "/__health", "health_probe_status": "404", "container_health": "healthy"})
+		observe(t, &evidence, "@SCN-RNF08-008", runtimeevidence.DefaultCase, "private_paths_absent",
+			"every private path, including the formerly public health probe, returned the same 404 no-route contract",
+			map[string]string{"paths": strings.Join(privatePaths, ","), "statuses": strings.Join(statuses, ",")})
 	})
 
 	merchantARead := merchantLogin(t, stack, merchantAUsername, stack.secrets["CASHFLOW_MERCHANT_A_PASSWORD"], "ledger:read")
@@ -118,7 +139,9 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 	expiredMerchantRead := merchantLoginForClient(t, stack, expiringMerchantClientID, merchantAUsername,
 		stack.secrets["CASHFLOW_MERCHANT_A_PASSWORD"], "ledger:read")
 	waitUntilJWTExpires(t, expiredMerchantRead)
-	pass(t, &evidence, "@SCN-RNF08-008", runtimeevidence.DefaultCase, "public_oidc_only", "six real authorization-code/PKCE flows used only the allowlisted public OIDC authorization and token paths")
+	observe(t, &evidence, "@SCN-RNF08-008", runtimeevidence.DefaultCase, "public_oidc_only",
+		"six real authorization-code/PKCE flows used only the allowlisted public OIDC authorization and token paths",
+		map[string]string{"authorization_code_flows": "6", "public_oidc_paths": "/realms/cashflow/protocol/openid-connect/auth,/realms/cashflow/login-actions/{action},/realms/cashflow/protocol/openid-connect/token"})
 	consolidationServiceToken := serviceToken(t, stack, consolidationClient, stack.secrets["CASHFLOW_CONSOLIDATION_CLIENT_SECRET"])
 
 	keys, err := auth.NewJWKSCache(auth.JWKSConfig{
@@ -136,13 +159,19 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 	}
 	assertMerchantIdentity(t, verifier, merchantARead, merchantAID, auth.ScopeLedgerRead)
 	assertMerchantIdentity(t, verifier, merchantBRead, merchantBID, auth.ScopeLedgerRead)
-	pass(t, &evidence, "@SCN-RNF06-001", runtimeevidence.DefaultCase, "valid_identity", "Keycloak issued a signed merchant token with the required audience, merchant claim and read scope")
+	observe(t, &evidence, "@SCN-RNF06-001", runtimeevidence.DefaultCase, "valid_identity",
+		"Keycloak issued a signed merchant token with the required audience, merchant claim and read scope",
+		map[string]string{"issuer": keycloakIssuer, "audience": publicAudience, "merchant_id": merchantAID, "scope": "ledger:read"})
 
 	t.Run("real KrakenD tenant isolation", func(t *testing.T) {
 		response := authorizedEdgeRequest(t, stack, merchantARead, http.MethodGet, "/v1/entries/entry-owned-by-a", nil, "")
 		assertResponseStatus(t, response, http.StatusOK)
-		pass(t, &evidence, "@SCN-RNF06-001", runtimeevidence.DefaultCase, "authorized_operation", "the authorized operation reached the final Ledger image through KrakenD")
-		pass(t, &evidence, "@SCN-RNF06-001", runtimeevidence.DefaultCase, "merchant_derived", "merchant A could read the resource selected by the merchant_id claim")
+		observe(t, &evidence, "@SCN-RNF06-001", runtimeevidence.DefaultCase, "authorized_operation",
+			"the authorized operation reached the final Ledger image through KrakenD",
+			map[string]string{"edge_status": "200", "path": "/v1/entries/entry-owned-by-a"})
+		observe(t, &evidence, "@SCN-RNF06-001", runtimeevidence.DefaultCase, "merchant_derived",
+			"merchant A could read the resource selected by the merchant_id claim",
+			map[string]string{"merchant_id": merchantAID, "entry_id": "entry-owned-by-a"})
 		response = authorizedEdgeRequest(t, stack, merchantARead, http.MethodGet, "/v1/entries/entry-owned-by-b", nil, "")
 		crossStatus, crossBody := responseStatusBody(t, response)
 		response = authorizedEdgeRequest(t, stack, merchantARead, http.MethodGet, "/v1/entries/entry-that-never-existed", nil, "")
@@ -150,33 +179,47 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		if crossStatus != http.StatusNotFound || crossStatus != absentStatus || string(crossBody) != string(absentBody) {
 			t.Fatalf("cross-tenant response differs from absent resource: cross=%d %s absent=%d %s", crossStatus, crossBody, absentStatus, absentBody)
 		}
+		bodyDigest := sha256Hex(crossBody)
 		response = authorizedEdgeRequest(t, stack, merchantBRead, http.MethodGet, "/v1/entries/entry-owned-by-b", nil, "")
 		assertResponseStatus(t, response, http.StatusOK)
-		pass(t, &evidence, "@SCN-RNF06-001", runtimeevidence.DefaultCase, "tenant_limited", "merchant A was denied merchant B's resource while each merchant retained access to its own resource")
-		pass(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "foreign_resource", "entry-owned-by-b is present and belongs to merchant B")
-		pass(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "access_attempted", "merchant A requested merchant B's existing entry through KrakenD")
-		pass(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "denied", "cross-merchant access returned 404")
-		pass(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "existence_hidden", "the cross-merchant response contained no ownership or existence signal")
-		pass(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "contract_equal", "cross-merchant and absent resources returned byte-identical status and body")
+		observe(t, &evidence, "@SCN-RNF06-001", runtimeevidence.DefaultCase, "tenant_limited",
+			"merchant A was denied merchant B's resource while each merchant retained access to its own resource",
+			map[string]string{"cross_status": "404", "own_status": "200"})
+		observe(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "foreign_resource",
+			"entry-owned-by-b is present and belongs to merchant B",
+			map[string]string{"entry_id": "entry-owned-by-b", "owner_merchant_id": merchantBID})
+		observe(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "access_attempted",
+			"merchant A requested merchant B's existing entry through KrakenD",
+			map[string]string{"caller_merchant_id": merchantAID, "path": "/v1/entries/entry-owned-by-b"})
+		observe(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "denied",
+			"cross-merchant access returned 404", map[string]string{"status": "404"})
+		observe(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "existence_hidden",
+			"the cross-merchant response contained no ownership or existence signal",
+			map[string]string{"body_sha256": bodyDigest, "identifiers_disclosed": "none"})
+		observe(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "contract_equal",
+			"cross-merchant and absent resources returned byte-identical status and body",
+			map[string]string{"cross_status": "404", "absent_status": "404", "body_sha256": bodyDigest})
 	})
 
 	t.Run("invalid identity examples are literal and never forwarded", func(t *testing.T) {
 		tests := []struct {
-			condition string
-			token     string
-			method    string
-			target    string
-			want      int
-			withAuth  bool
+			condition       string
+			credentialState string
+			token           string
+			method          string
+			target          string
+			want            int
+			withAuth        bool
 		}{
-			{condition: "ausente", method: http.MethodGet, target: "/v1/entries", want: http.StatusUnauthorized},
-			{condition: "expirado", token: expiredMerchantRead, method: http.MethodGet, target: "/v1/entries", want: http.StatusUnauthorized, withAuth: true},
-			{condition: "com assinatura inválida", token: corruptJWT(merchantARead), method: http.MethodGet, target: "/v1/entries", want: http.StatusUnauthorized, withAuth: true},
-			{condition: "sem o escopo exigido", token: merchantARead, method: http.MethodPost, target: "/v1/entries", want: http.StatusForbidden, withAuth: true},
+			{condition: "ausente", credentialState: "absent", method: http.MethodGet, target: "/v1/entries", want: http.StatusUnauthorized},
+			{condition: "expirado", credentialState: "expired", token: expiredMerchantRead, method: http.MethodGet, target: "/v1/entries", want: http.StatusUnauthorized, withAuth: true},
+			{condition: "com assinatura inválida", credentialState: "invalid_signature", token: corruptJWT(merchantARead), method: http.MethodGet, target: "/v1/entries", want: http.StatusUnauthorized, withAuth: true},
+			{condition: "sem o escopo exigido", credentialState: "insufficient_scope", token: merchantARead, method: http.MethodPost, target: "/v1/entries", want: http.StatusForbidden, withAuth: true},
 		}
 		for _, test := range tests {
 			t.Run(test.condition, func(t *testing.T) {
-				before := metricValue(t, stack, "cashflow_http_requests_total")
+				authenticatedBefore := metricValue(t, stack, "cashflow_http_requests_total")
+				entrypointBefore := metricValue(t, stack, "cashflow_http_entrypoint_total")
 				request := newEdgeRequest(t, stack, test.method, test.target, strings.NewReader(`{}`), "application/json")
 				if test.withAuth {
 					request.Header.Set("Authorization", "Bearer "+test.token)
@@ -189,23 +232,49 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 				if statusCode != test.want {
 					t.Fatalf("condition %q returned %d body %s, want %d", test.condition, statusCode, body, test.want)
 				}
-				if after := metricValue(t, stack, "cashflow_http_requests_total"); after != before {
-					t.Fatalf("condition %q reached Ledger: requests changed from %d to %d", test.condition, before, after)
+				authenticatedAfter := metricValue(t, stack, "cashflow_http_requests_total")
+				entrypointAfter := metricValue(t, stack, "cashflow_http_entrypoint_total")
+				if authenticatedAfter != authenticatedBefore {
+					t.Fatalf("condition %q reached Ledger: requests changed from %d to %d", test.condition, authenticatedBefore, authenticatedAfter)
+				}
+				if err := forwardingoracle.AssertNotForwarded(entrypointBefore, entrypointAfter); err != nil {
+					t.Fatalf("condition %q: %v", test.condition, err)
 				}
 				for _, forbidden := range []string{merchantAID, merchantBID, "entry-owned-by-a", "entry-owned-by-b"} {
 					if strings.Contains(string(body), forbidden) {
 						t.Fatalf("condition %q disclosed %q in %s", test.condition, forbidden, body)
 					}
 				}
-				for _, oracle := range []string{"condition_exercised", "protected_operation", "rejected", "no_effect_or_disclosure"} {
-					pass(t, &evidence, "@SCN-RNF06-002", test.condition, oracle,
-						fmt.Sprintf("%s: edge status=%d and Ledger request count remained %d", test.condition, statusCode, before))
-				}
+				observations := map[string]string{"credential_state": test.credentialState}
+				observe(t, &evidence, "@SCN-RNF06-002", test.condition, "condition_exercised",
+					fmt.Sprintf("%s credential was presented to the edge", test.condition), observations)
+				observe(t, &evidence, "@SCN-RNF06-002", test.condition, "protected_operation",
+					fmt.Sprintf("%s %s was requested", test.method, test.target),
+					map[string]string{"method": test.method, "path": test.target})
+				observe(t, &evidence, "@SCN-RNF06-002", test.condition, "rejected",
+					fmt.Sprintf("edge returned %d", statusCode), map[string]string{"edge_status": strconv.Itoa(statusCode)})
+				observe(t, &evidence, "@SCN-RNF06-002", test.condition, "no_effect_or_disclosure",
+					fmt.Sprintf("neither the pre-auth entrypoint (%d->%d) nor the authenticated (%d->%d) Ledger counter advanced, and no identifier leaked",
+						entrypointBefore, entrypointAfter, authenticatedBefore, authenticatedAfter),
+					map[string]string{
+						"entrypoint_delta":      strconv.FormatUint(entrypointAfter-entrypointBefore, 10),
+						"authenticated_delta":   strconv.FormatUint(authenticatedAfter-authenticatedBefore, 10),
+						"identifiers_disclosed": "none",
+					})
 				if test.condition != "sem o escopo exigido" {
-					for _, oracle := range []string{"condition_exercised", "public_edge_call", "rejected_without_forward"} {
-						pass(t, &evidence, "@SCN-RNF08-002", test.condition, oracle,
-							fmt.Sprintf("%s: final KrakenD returned %d without changing Ledger request count", test.condition, statusCode))
-					}
+					observe(t, &evidence, "@SCN-RNF08-002", test.condition, "condition_exercised",
+						fmt.Sprintf("%s credential was presented to the edge", test.condition), observations)
+					observe(t, &evidence, "@SCN-RNF08-002", test.condition, "public_edge_call",
+						fmt.Sprintf("%s %s was requested through the final edge image", test.method, test.target),
+						map[string]string{"edge_image": "cashflow-krakend-t02-e2e:local", "method": test.method, "path": test.target})
+					observe(t, &evidence, "@SCN-RNF08-002", test.condition, "rejected_without_forward",
+						fmt.Sprintf("edge returned %d while the Ledger's pre-authentication entrypoint counter stayed at %d (a forwarding mutation was separately proven to move and be detected)", statusCode, entrypointAfter),
+						map[string]string{
+							"edge_status":        strconv.Itoa(statusCode),
+							"entrypoint_before":  strconv.FormatUint(entrypointBefore, 10),
+							"entrypoint_after":   strconv.FormatUint(entrypointAfter, 10),
+							"forwarding_control": "a mutated edge without auth/validator was separately confirmed to move this counter and be detected",
+						})
 				}
 			})
 		}
@@ -213,13 +282,48 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		assertResponseStatus(t, response, http.StatusUnauthorized)
 	})
 
+	t.Run("mutated edge without auth/validator forwards invalid identity and the oracle detects it", func(t *testing.T) {
+		// This is the ticket's required negative case: a KrakenD instance whose
+		// /v1/entries GET endpoint has no auth/validator block will forward an
+		// unauthenticated request straight to the real Ledger. The Ledger's own
+		// middleware still rejects it (defense in depth), so the status code
+		// alone looks identical to the correctly configured edge. The
+		// pre-authentication entrypoint counter is what must differ, and the
+		// oracle must fail loudly when it does.
+		entrypointBefore := metricValue(t, stack, "cashflow_http_entrypoint_total")
+		request := newBypassEdgeRequest(t, stack, http.MethodGet, "/v1/entries")
+		response, err := newEdgeClient(t).Do(request)
+		if err != nil {
+			t.Fatalf("call the mutated edge: %v", err)
+		}
+		bypassStatus := response.StatusCode
+		response.Body.Close()
+		if bypassStatus != http.StatusUnauthorized {
+			t.Fatalf("mutated edge without auth/validator returned %d, want the Ledger's own 401", bypassStatus)
+		}
+		entrypointAfter := metricValue(t, stack, "cashflow_http_entrypoint_total")
+		if err := forwardingoracle.AssertNotForwarded(entrypointBefore, entrypointAfter); err == nil {
+			t.Fatalf("the mutated edge forwarded an unauthenticated request (entrypoint %d->%d) but the oracle did not detect it",
+				entrypointBefore, entrypointAfter)
+		}
+	})
+
 	t.Run("anti-enumeration timing uses paired robust samples", func(t *testing.T) {
-		detail := assertTimingIndistinguishable(t, stack, merchantARead)
-		pass(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "timing_indistinguishable", detail)
+		verdict := assertTimingIndistinguishable(t, stack, merchantARead)
+		observe(t, &evidence, "@SCN-RNF06-003", runtimeevidence.DefaultCase, "timing_indistinguishable", verdict.String(),
+			map[string]string{
+				"samples":        strconv.Itoa(verdict.Samples),
+				"foreign_median": verdict.ForeignMedian.String(),
+				"absent_median":  verdict.AbsentMedian.String(),
+				"difference":     verdict.Difference.String(),
+				"tolerance":      verdict.Tolerance.String(),
+				"separability":   strconv.FormatFloat(verdict.Separability, 'f', -1, 64),
+			})
 	})
 
 	t.Run("final Ledger image rejects direct invalid identity", func(t *testing.T) {
-		before := metricValue(t, stack, "cashflow_http_requests_total")
+		authenticatedBefore := metricValue(t, stack, "cashflow_http_requests_total")
+		entrypointBefore := metricValue(t, stack, "cashflow_http_entrypoint_total")
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, stack.ledgerHTTP+"/v1/entries", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -230,18 +334,27 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertResponseStatus(t, response, http.StatusUnauthorized)
-		if after := metricValue(t, stack, "cashflow_http_requests_total"); after != before {
-			t.Fatalf("direct invalid identity reached the adapter: requests changed from %d to %d", before, after)
+		authenticatedAfter := metricValue(t, stack, "cashflow_http_requests_total")
+		entrypointAfter := metricValue(t, stack, "cashflow_http_entrypoint_total")
+		if authenticatedAfter != authenticatedBefore {
+			t.Fatalf("direct invalid identity reached the adapter: requests changed from %d to %d", authenticatedBefore, authenticatedAfter)
 		}
-		for _, item := range []struct{ oracle, detail string }{
-			{"direct_private_call", "the host called the final Ledger HTTP image directly, bypassing KrakenD"},
-			{"invalid_operation_jwt", "the direct request carried a malformed bearer credential"},
-			{"service_validated", "the production Ledger authentication middleware evaluated the credential"},
-			{"rejected", "the final Ledger image returned 401"},
-			{"no_commit", "the authenticated adapter request counter did not advance"},
-		} {
-			pass(t, &evidence, "@SCN-RNF08-003", runtimeevidence.DefaultCase, item.oracle, item.detail)
+		if entrypointAfter-entrypointBefore != 1 {
+			t.Fatalf("direct call did not reach the adapter's entrypoint exactly once: %d->%d", entrypointBefore, entrypointAfter)
 		}
+		observe(t, &evidence, "@SCN-RNF08-003", runtimeevidence.DefaultCase, "direct_private_call",
+			"the host called the final Ledger HTTP image directly, bypassing KrakenD",
+			map[string]string{"target": stack.ledgerHTTP + "/v1/entries", "bypassed": "krakend"})
+		observe(t, &evidence, "@SCN-RNF08-003", runtimeevidence.DefaultCase, "invalid_operation_jwt",
+			"the direct request carried a malformed bearer credential", map[string]string{"credential_state": "malformed"})
+		observe(t, &evidence, "@SCN-RNF08-003", runtimeevidence.DefaultCase, "service_validated",
+			"the production Ledger authentication middleware evaluated the credential after it reached the entrypoint",
+			map[string]string{"entrypoint_delta": strconv.FormatUint(entrypointAfter-entrypointBefore, 10)})
+		observe(t, &evidence, "@SCN-RNF08-003", runtimeevidence.DefaultCase, "rejected",
+			"the final Ledger image returned 401", map[string]string{"status": "401"})
+		observe(t, &evidence, "@SCN-RNF08-003", runtimeevidence.DefaultCase, "no_commit",
+			"the authenticated adapter request counter did not advance",
+			map[string]string{"authenticated_delta": strconv.FormatUint(authenticatedAfter-authenticatedBefore, 10)})
 	})
 
 	t.Run("final KrakenD preserves four header semantics", func(t *testing.T) {
@@ -270,9 +383,26 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		if state.Headers.TraceState != tracecontext.PublicTraceState {
 			t.Fatalf("safe tracestate changed: got %q, want %q", state.Headers.TraceState, tracecontext.PublicTraceState)
 		}
-		pass(t, &evidence, "@SCN-RNF08-004", runtimeevidence.DefaultCase, "four_headers_sent", "the public request carried Authorization, Idempotency-Key, traceparent and the fixed safe tracestate")
-		pass(t, &evidence, "@SCN-RNF08-004", runtimeevidence.DefaultCase, "edge_forwarded", "the final KrakenD image invoked the dedicated backend fixture exactly once")
-		pass(t, &evidence, "@SCN-RNF08-004", runtimeevidence.DefaultCase, "four_headers_preserved", "the backend observed exact auth/idempotency/tracestate values and a traceparent with the same trace ID and flags")
+		authorizationDigest := sha256Hex([]byte("Bearer " + merchantAWrite))
+		observe(t, &evidence, "@SCN-RNF08-004", runtimeevidence.DefaultCase, "four_headers_sent",
+			"the public request carried Authorization, Idempotency-Key, traceparent and the fixed safe tracestate",
+			map[string]string{
+				"authorization_sha256": authorizationDigest,
+				"idempotency_key":      "e2e-header-key",
+				"traceparent":          span.String(),
+				"tracestate":           tracecontext.PublicTraceState,
+			})
+		observe(t, &evidence, "@SCN-RNF08-004", runtimeevidence.DefaultCase, "edge_forwarded",
+			"the final KrakenD image invoked the dedicated backend fixture exactly once",
+			map[string]string{"backend_invocations": "1", "edge_image": "cashflow-krakend-t02-e2e:local"})
+		observe(t, &evidence, "@SCN-RNF08-004", runtimeevidence.DefaultCase, "four_headers_preserved",
+			"the backend observed exact auth/idempotency/tracestate values and a traceparent with the same trace ID and flags",
+			map[string]string{
+				"authorization_sha256": sha256Hex([]byte(state.Headers.Authorization)),
+				"idempotency_key":      state.Headers.IdempotencyKey,
+				"trace_id":             forwarded.TraceID,
+				"tracestate":           state.Headers.TraceState,
+			})
 	})
 
 	t.Run("committed EOF is not retried and client replay is idempotent", func(t *testing.T) {
@@ -295,9 +425,15 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		if first.Invocations != 1 || first.Commits != 1 || first.Replays != 0 {
 			t.Fatalf("gateway retried the committed EOF or commit was lost: %+v", first)
 		}
-		pass(t, &evidence, "@SCN-RNF08-005", runtimeevidence.DefaultCase, "commit_then_eof", "fault backend durably recorded one commit before hijacking and closing the response connection")
-		pass(t, &evidence, "@SCN-RNF08-005", runtimeevidence.DefaultCase, "edge_observed_failure", fmt.Sprintf("KrakenD exposed the interrupted backend response as a failure (client error=%t)", callErr != nil))
-		pass(t, &evidence, "@SCN-RNF08-005", runtimeevidence.DefaultCase, "single_gateway_invocation", "after the retry observation window the backend recorded exactly one invocation and one commit")
+		observe(t, &evidence, "@SCN-RNF08-005", runtimeevidence.DefaultCase, "commit_then_eof",
+			"fault backend durably recorded one commit before hijacking and closing the response connection",
+			map[string]string{"invocations": strconv.Itoa(first.Invocations), "commits": strconv.Itoa(first.Commits), "replays": strconv.Itoa(first.Replays)})
+		observe(t, &evidence, "@SCN-RNF08-005", runtimeevidence.DefaultCase, "edge_observed_failure",
+			fmt.Sprintf("KrakenD exposed the interrupted backend response as a failure (client error=%t)", callErr != nil),
+			map[string]string{"client_transport_error": strconv.FormatBool(callErr != nil), "gateway_status": gatewayStatusLabel(response, callErr)})
+		observe(t, &evidence, "@SCN-RNF08-005", runtimeevidence.DefaultCase, "single_gateway_invocation",
+			"after the retry observation window the backend recorded exactly one invocation and one commit",
+			map[string]string{"invocations": strconv.Itoa(first.Invocations), "commits": strconv.Itoa(first.Commits)})
 
 		replay := newFaultEdgeRequest(t, stack, merchantAWrite, "e2e-eof-key", span,
 			tracecontext.PublicTraceState, strings.NewReader(`{"fixture":"commit-then-eof"}`))
@@ -311,7 +447,14 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		if afterReplay.Invocations != 2 || afterReplay.Commits != 1 || afterReplay.Replays != 1 {
 			t.Fatalf("same-key client replay was not idempotent: %+v", afterReplay)
 		}
-		pass(t, &evidence, "@SCN-RNF08-005", runtimeevidence.DefaultCase, "idempotent_client_replay", "a second client request with the same key returned the recorded result with two calls, one commit and one replay")
+		observe(t, &evidence, "@SCN-RNF08-005", runtimeevidence.DefaultCase, "idempotent_client_replay",
+			"a second client request with the same key returned the recorded result with two calls, one commit and one replay",
+			map[string]string{
+				"invocations":   strconv.Itoa(afterReplay.Invocations),
+				"commits":       strconv.Itoa(afterReplay.Commits),
+				"replays":       strconv.Itoa(afterReplay.Replays),
+				"replay_status": "200",
+			})
 	})
 
 	t.Run("final Ledger command remains bounded and redacted", func(t *testing.T) {
@@ -368,9 +511,15 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		if strings.Contains(collectorLogs, maliciousTraceState) {
 			t.Fatalf("collector exported malicious tracestate %q", maliciousTraceState)
 		}
-		pass(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "context_and_deadline", "the HTTP caller supplied a sampled traceparent and the gRPC client attached a bounded deadline")
-		pass(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "crossed_grpc", "collector spans prove the final Consolidation image called the final Ledger gRPC image")
-		pass(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "traceparent_correlated", "external caller, HTTP server, gRPC client and gRPC server share one trace ID with correct parentage")
+		observe(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "context_and_deadline",
+			"the HTTP caller supplied a sampled traceparent and the gRPC client attached a bounded deadline",
+			map[string]string{"traceparent": span.String(), "grpc_max_deadline": "10s"})
+		observe(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "crossed_grpc",
+			"collector spans prove the final Consolidation image called the final Ledger gRPC image",
+			map[string]string{"trace_id": span.TraceID, "span_kinds": "Server,Client,Server"})
+		observe(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "traceparent_correlated",
+			"external caller, HTTP server, gRPC client and gRPC server share one trace ID with correct parentage",
+			map[string]string{"trace_id": span.TraceID, "caller_span_id": span.SpanID, "lineage": "http-server -> grpc-client -> grpc-server"})
 
 		response = authorizedEdgeRequest(t, stack, merchantBConsolidation, http.MethodGet, "/v1/daily-balances", nil, "")
 		if response.StatusCode < 500 {
@@ -418,11 +567,18 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		if status.Code(err) != codes.Unauthenticated {
 			t.Fatalf("watermark without service identity: got %v", err)
 		}
-		assertNoWatermarkRoute(t, stack)
-		pass(t, &evidence, "@SCN-RNF08-009", runtimeevidence.DefaultCase, "watermark_internal", "the generated watermark RPC is bound only to the mTLS gRPC listener")
-		pass(t, &evidence, "@SCN-RNF08-009", runtimeevidence.DefaultCase, "missing_service_identity", "a real mTLS client called watermark without authorization metadata")
-		pass(t, &evidence, "@SCN-RNF08-009", runtimeevidence.DefaultCase, "ledger_rejected", "the final Ledger image returned gRPC Unauthenticated")
-		pass(t, &evidence, "@SCN-RNF08-009", runtimeevidence.DefaultCase, "no_public_route", "the running KrakenD config contains no watermark/internal endpoint and representative public paths returned 404")
+		endpoints, probeStatuses := assertNoWatermarkRoute(t, stack)
+		observe(t, &evidence, "@SCN-RNF08-009", runtimeevidence.DefaultCase, "watermark_internal",
+			"the generated watermark RPC is bound only to the mTLS gRPC listener",
+			map[string]string{"transport": "grpc+mtls", "target": stack.ledgerGRPC})
+		observe(t, &evidence, "@SCN-RNF08-009", runtimeevidence.DefaultCase, "missing_service_identity",
+			"a real mTLS client called watermark without authorization metadata",
+			map[string]string{"authorization_metadata": "absent"})
+		observe(t, &evidence, "@SCN-RNF08-009", runtimeevidence.DefaultCase, "ledger_rejected",
+			"the final Ledger image returned gRPC Unauthenticated", map[string]string{"grpc_code": "Unauthenticated"})
+		observe(t, &evidence, "@SCN-RNF08-009", runtimeevidence.DefaultCase, "no_public_route",
+			"the running KrakenD config contains no watermark/internal endpoint and representative public paths returned 404",
+			map[string]string{"config_endpoints": strings.Join(endpoints, ","), "probe_statuses": strings.Join(probeStatuses, ",")})
 
 		healthClient := healthv1.NewHealthClient(healthConnection)
 		deadlineCtx, deadlineCancel := context.WithTimeout(ctx, 100*time.Millisecond)
@@ -489,47 +645,84 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		if status.Code(err) != codes.ResourceExhausted {
 			t.Fatalf("oversized gRPC request: got %v", err)
 		}
-		pass(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "limits_enforced", "real gRPC health watch returned DeadlineExceeded and Canceled; a >4MiB watermark request returned ResourceExhausted")
+		observe(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "limits_enforced",
+			"real gRPC health watch returned DeadlineExceeded and Canceled; a >4MiB watermark request returned ResourceExhausted",
+			map[string]string{"deadline_code": "DeadlineExceeded", "cancel_code": "Canceled", "oversize_code": "ResourceExhausted"})
 	})
 
 	t.Run("real telemetry excludes credentials and payload", func(t *testing.T) {
-		logs := containerLogs(t, stack.ctx, stack.ledger) + containerLogs(t, stack.ctx, stack.consolidation) +
-			containerLogs(t, stack.ctx, stack.krakend) + containerLogs(t, stack.ctx, stack.keycloak) +
-			containerLogs(t, stack.ctx, stack.collector)
+		containers := []struct {
+			name      string
+			container testcontainers.Container
+		}{
+			{"ledger-api", stack.ledger}, {"consolidation-api", stack.consolidation},
+			{"krakend", stack.krakend}, {"keycloak", stack.keycloak}, {"otel-collector", stack.collector},
+		}
+		names := make([]string, 0, len(containers))
+		logs := ""
+		for _, entry := range containers {
+			names = append(names, entry.name)
+			logs += containerLogs(t, stack.ctx, entry.container)
+		}
 		sensitive := []string{
 			merchantARead, merchantAWrite, consolidationServiceToken,
 			stack.secrets["CASHFLOW_CONSOLIDATION_CLIENT_SECRET"],
 			stack.secrets["CASHFLOW_RECONCILIATION_CLIENT_SECRET"],
 			sensitiveKey, sensitiveText, sensitiveAmount, maliciousTraceState, "merchant=attacker",
 		}
+		matches := 0
 		for _, value := range sensitive {
 			if value != "" && strings.Contains(logs, value) {
-				t.Fatalf("real adapter telemetry leaked sensitive value %q", value)
+				matches++
 			}
 		}
-		pass(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "telemetry_redacted", "logs and Collector output excluded JWTs, client secrets, idempotency key, description, amount, baggage and malicious tracestate")
+		if matches != 0 {
+			t.Fatalf("real adapter telemetry leaked %d sensitive value(s)", matches)
+		}
+		observe(t, &evidence, "@SCN-RNF09-004", runtimeevidence.DefaultCase, "telemetry_redacted",
+			"logs and Collector output excluded JWTs, client secrets, idempotency key, description, amount, baggage and malicious tracestate",
+			map[string]string{
+				"inspected_containers":     strings.Join(names, ","),
+				"sensitive_values_checked": strconv.Itoa(len(sensitive)),
+				"matches":                  strconv.Itoa(matches),
+			})
 	})
 	if !t.Failed() {
-		writeRuntimeEvidence(t, evidence)
+		writeRuntimeEvidence(t, evidence, evidenceKey)
 	}
 }
 
-func writeRuntimeEvidence(t *testing.T, evidence runtimeevidence.Evidence) {
+func writeRuntimeEvidence(t *testing.T, evidence runtimeevidence.Evidence, key []byte) {
 	t.Helper()
-	path := os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE")
+	path := os.Getenv(runtimeevidence.FileEnvVar)
 	if path == "" {
 		return
 	}
-	if err := runtimeevidence.Write(path, evidence); err != nil {
+	if err := runtimeevidence.Write(path, evidence, key); err != nil {
 		t.Fatalf("write runtime evidence: %v", err)
 	}
 }
 
-func pass(t *testing.T, evidence *runtimeevidence.Evidence, tag, caseID, oracle, detail string) {
+func observe(t *testing.T, evidence *runtimeevidence.Evidence, tag, caseID, oracle, detail string, observations map[string]string) {
 	t.Helper()
-	if err := evidence.Pass(tag, caseID, oracle, detail); err != nil {
+	if err := evidence.Observe(tag, caseID, oracle, detail, observations); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func sha256Hex(value []byte) string {
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:])
+}
+
+// gatewayStatusLabel names the outcome KrakenD exposed to the client for a
+// backend it observed fail: a transport-level error when the connection was
+// hijacked and closed, or the numeric status code otherwise.
+func gatewayStatusLabel(response *http.Response, callErr error) string {
+	if callErr != nil {
+		return "transport_error"
+	}
+	return strconv.Itoa(response.StatusCode)
 }
 
 func repositoryRoot(t *testing.T) string {
@@ -637,6 +830,55 @@ func renderFaultKrakendConfig(t *testing.T, repositoryRoot, temporary string) st
 	return path
 }
 
+// renderBypassKrakendConfig produces the mutation the ticket requires: the
+// same production config with the auth/validator block stripped from the
+// /v1/entries GET endpoint, so that endpoint forwards to the real Ledger
+// unconditionally. Every other endpoint, including its own auth, is left
+// untouched.
+func renderBypassKrakendConfig(t *testing.T, repositoryRoot, temporary string) string {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(repositoryRoot, "deploy", "edge", "krakend", "krakend.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(contents, &config); err != nil {
+		t.Fatal(err)
+	}
+	endpoints, ok := config["endpoints"].([]any)
+	if !ok {
+		t.Fatal("bypass fixture: krakend config has no endpoints array")
+	}
+	mutated := false
+	for _, raw := range endpoints {
+		endpoint, ok := raw.(map[string]any)
+		if !ok || endpoint["endpoint"] != "/v1/entries" || endpoint["method"] != "GET" {
+			continue
+		}
+		extra, ok := endpoint["extra_config"].(map[string]any)
+		if !ok {
+			t.Fatal("bypass fixture: target endpoint has no extra_config")
+		}
+		if _, present := extra["auth/validator"]; !present {
+			t.Fatal("bypass fixture: target endpoint no longer declares auth/validator; mutation fixture is stale")
+		}
+		delete(extra, "auth/validator")
+		mutated = true
+	}
+	if !mutated {
+		t.Fatal("bypass fixture: did not find GET /v1/entries to mutate")
+	}
+	updated, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(temporary, "bypass-krakend.json")
+	if err := os.WriteFile(path, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 type faultBackendState struct {
 	Headers struct {
 		Authorization  string `json:"authorization"`
@@ -690,7 +932,11 @@ func faultState(t *testing.T, stack runtimeStack) faultBackendState {
 	return state
 }
 
-func assertNoWatermarkRoute(t *testing.T, stack runtimeStack) {
+// assertNoWatermarkRoute proves the running KrakenD config has no route for
+// the private watermark RPC and returns what it checked, so the caller can
+// record the exact endpoints inspected and the exact statuses observed instead
+// of a bare pass/fail.
+func assertNoWatermarkRoute(t *testing.T, stack runtimeStack) (endpoints, statuses []string) {
 	t.Helper()
 	configFile, err := stack.krakend.CopyFileFromContainer(stack.ctx, "/etc/krakend/krakend.json")
 	if err != nil {
@@ -709,19 +955,25 @@ func assertNoWatermarkRoute(t *testing.T, stack runtimeStack) {
 	if err := json.Unmarshal(contents, &config); err != nil {
 		t.Fatalf("decode running KrakenD config: %v", err)
 	}
+	endpoints = make([]string, 0, len(config.Endpoints))
 	for _, endpoint := range config.Endpoints {
+		endpoints = append(endpoints, endpoint.Endpoint)
 		lower := strings.ToLower(endpoint.Endpoint)
 		if strings.Contains(lower, "watermark") || strings.Contains(lower, "internal") || strings.Contains(lower, "grpc") {
 			t.Fatalf("running KrakenD exposes private RPC route %q", endpoint.Endpoint)
 		}
 	}
-	for _, path := range []string{"/internal/ledger/watermark", "/v1/watermark", "/watermark"} {
+	probePaths := []string{"/internal/ledger/watermark", "/v1/watermark", "/watermark"}
+	statuses = make([]string, 0, len(probePaths))
+	for _, path := range probePaths {
 		response := edgeRequest(t, stack, newEdgeClient(t), http.MethodGet, path, nil, "")
+		statuses = append(statuses, strconv.Itoa(response.StatusCode))
 		assertResponseStatus(t, response, http.StatusNotFound)
 	}
+	return endpoints, statuses
 }
 
-func assertTimingIndistinguishable(t *testing.T, stack runtimeStack, token string) string {
+func assertTimingIndistinguishable(t *testing.T, stack runtimeStack, token string) timingoracle.Verdict {
 	t.Helper()
 	const samples = 32
 	client := newEdgeClient(t)
@@ -753,47 +1005,11 @@ func assertTimingIndistinguishable(t *testing.T, stack runtimeStack, token strin
 			time.Sleep(120 * time.Millisecond)
 		}
 	}
-	foreignMedian, absentMedian := median(foreign), median(absent)
-	foreignMAD, absentMAD := medianAbsoluteDeviation(foreign, foreignMedian), medianAbsoluteDeviation(absent, absentMedian)
-	difference := durationAbs(foreignMedian - absentMedian)
-	noiseTolerance := 6 * (foreignMAD + absentMAD)
-	relativeTolerance := time.Duration(0.5 * float64(maxDuration(foreignMedian, absentMedian)))
-	tolerance := maxDuration(20*time.Millisecond, maxDuration(noiseTolerance, relativeTolerance))
-	if difference > tolerance {
-		t.Fatalf("practical timing enumeration detected: samples=%d foreign_median=%s absent_median=%s foreign_mad=%s absent_mad=%s difference=%s tolerance=%s",
-			samples, foreignMedian, absentMedian, foreignMAD, absentMAD, difference, tolerance)
+	verdict, err := timingoracle.Evaluate(foreign, absent)
+	if err != nil {
+		t.Fatalf("practical timing enumeration detected: %v", err)
 	}
-	return fmt.Sprintf("paired alternating samples=%d per class; median foreign=%s absent=%s; MAD foreign=%s absent=%s; |delta|=%s <= tolerance=%s (max of 20ms, 6×combined MAD, 50%% relative)",
-		samples, foreignMedian, absentMedian, foreignMAD, absentMAD, difference, tolerance)
-}
-
-func median(values []time.Duration) time.Duration {
-	ordered := append([]time.Duration(nil), values...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
-	middle := len(ordered) / 2
-	if len(ordered)%2 == 1 {
-		return ordered[middle]
-	}
-	return (ordered[middle-1] + ordered[middle]) / 2
-}
-
-func medianAbsoluteDeviation(values []time.Duration, center time.Duration) time.Duration {
-	deviations := make([]time.Duration, len(values))
-	for index, value := range values {
-		deviations[index] = durationAbs(value - center)
-	}
-	return median(deviations)
-}
-
-func durationAbs(value time.Duration) time.Duration {
-	return time.Duration(math.Abs(float64(value)))
-}
-
-func maxDuration(left, right time.Duration) time.Duration {
-	if left > right {
-		return left
-	}
-	return right
+	return verdict
 }
 
 func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
@@ -821,6 +1037,7 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 	buildDockerImage(t, ctx, repositoryRoot, "cashflow-consolidation-t02-e2e:local", "deploy/identity/consolidation-api.Containerfile")
 	faultBinary := buildFaultBackend(t, ctx, repositoryRoot, temporary)
 	faultConfig := renderFaultKrakendConfig(t, repositoryRoot, temporary)
+	bypassConfig := renderBypassKrakendConfig(t, repositoryRoot, temporary)
 	serviceSecretFile := filepath.Join(temporary, "consolidation-secret")
 	if err := os.WriteFile(serviceSecretFile, []byte(secrets["CASHFLOW_CONSOLIDATION_CLIENT_SECRET"]), 0o600); err != nil {
 		t.Fatal(err)
@@ -980,11 +1197,28 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 		},
 		WaitingFor: wait.ForHealthCheck().WithStartupTimeout(90 * time.Second),
 	})
+	bypassKrakend := runContainer(t, ctx, testcontainers.ContainerRequest{
+		Image:          "cashflow-krakend-t02-e2e:local",
+		ExposedPorts:   []string{"8080/tcp"},
+		Networks:       []string{nw.Name},
+		NetworkAliases: map[string][]string{nw.Name: {"bypass-krakend"}},
+		Env:            map[string]string{"SSL_CERT_FILE": "/etc/cashflow/ca.pem"},
+		Cmd:            []string{"run", "-c", "/etc/krakend/krakend.json"},
+		Files: []testcontainers.ContainerFile{
+			containerFile(pki.CA, "/etc/cashflow/ca.pem", 0o644),
+			containerFile(bypassConfig, "/etc/krakend/krakend.json", 0o644),
+		},
+		WaitingFor: wait.ForHealthCheck().WithStartupTimeout(90 * time.Second),
+	})
 	edgeBaseURL, err := krakend.PortEndpoint(ctx, "8080/tcp", "http")
 	if err != nil {
 		t.Fatal(err)
 	}
 	faultEdgeBaseURL, err := faultKrakend.PortEndpoint(ctx, "8080/tcp", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bypassEdgeBaseURL, err := bypassKrakend.PortEndpoint(ctx, "8080/tcp", "http")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1013,9 +1247,10 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 	// deliberately issued to the container-network identity used in production.
 	directHTTP.Transport.(*http.Transport).TLSClientConfig.ServerName = "keycloak"
 	return runtimeStack{ctx: ctx, keycloak: keycloak, ledger: ledger, consolidation: consolidation, krakend: krakend, collector: collector,
-		faultBackend: faultBackend, faultKrakend: faultKrakend, pki: pki,
+		faultBackend: faultBackend, faultKrakend: faultKrakend, bypassKrakend: bypassKrakend, pki: pki,
 		keycloakBaseURL: keycloakBaseURL, edgeBaseURL: edgeBaseURL, faultEdgeBaseURL: faultEdgeBaseURL, faultBackendURL: faultBackendURL,
-		ledgerGRPC: ledgerGRPC, ledgerHTTP: ledgerHTTP, ledgerMetrics: ledgerMetrics,
+		bypassEdgeBaseURL: bypassEdgeBaseURL,
+		ledgerGRPC:        ledgerGRPC, ledgerHTTP: ledgerHTTP, ledgerMetrics: ledgerMetrics,
 		directHTTP: directHTTP, secrets: secrets}
 }
 
@@ -1239,6 +1474,20 @@ func newEdgeRequest(t *testing.T, stack runtimeStack, method, target string, bod
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}
+	return request
+}
+
+// newBypassEdgeRequest targets the mutated KrakenD instance whose
+// /v1/entries GET endpoint has no auth/validator block, used only to prove
+// the forwarding oracle detects an edge that forwards invalid identity.
+func newBypassEdgeRequest(t *testing.T, stack runtimeStack, method, target string) *http.Request {
+	t.Helper()
+	request, err := http.NewRequestWithContext(stack.ctx, method, stack.bypassEdgeBaseURL+target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "edge.cashflow.local"
+	request.Header.Set("X-Forwarded-Proto", "https")
 	return request
 }
 

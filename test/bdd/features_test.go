@@ -52,7 +52,7 @@ func TestAllFeaturesParseWithGodog(t *testing.T) {
 }
 
 func TestImplementedScenarios(t *testing.T) {
-	ensureRuntimeEvidence(t)
+	evidence := realRuntimeEvidence(t)
 	catalog, err := bddcatalog.Load(featuresDir, manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestImplementedScenarios(t *testing.T) {
 		Name:       "implemented-bdd",
 		Paths:      []string{featuresDir},
 		Tags:       catalog.ImplementedScenarios,
-		Initialize: steps.Initialize,
+		Initialize: steps.Initialize(evidence),
 	})
 	if len(catalog.ImplementedScenarios) == 0 {
 		if runErr == nil || !strings.Contains(runErr.Error(), "selection is empty") {
@@ -76,29 +76,59 @@ func TestImplementedScenarios(t *testing.T) {
 	}
 }
 
-func ensureRuntimeEvidence(t *testing.T) {
+// realRuntimeEvidence owns the whole lifecycle of the proof. If this process
+// already inherited a file path and a key -- meaning `make test`/`make ci`
+// minted that key once and used it for the direct E2E run that precedes this
+// suite -- and the file at that path attests under that same key, it is
+// reused so the gate does not start a second real stack. Any other file left
+// at that path, or a key that does not match, fails the keyed attestation and
+// falls through: this process mints its own key and starts the real container
+// stack itself, so a pre-written file can never reach these bindings on its
+// own.
+func realRuntimeEvidence(t *testing.T) runtimeevidence.Evidence {
 	t.Helper()
-	if path := os.Getenv("CASHFLOW_RUNTIME_EVIDENCE_FILE"); path != "" {
-		root, rootErr := filepath.Abs(filepath.Join("..", ".."))
-		if rootErr == nil {
-			if _, err := runtimeevidence.LoadForSource(path, root); err == nil {
-				return
-			}
-		}
-	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if inherited, ok := inheritedRuntimeEvidence(t, root); ok {
+		return inherited
+	}
+	key, err := runtimeevidence.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(t.TempDir(), "runtime-evidence.json")
-	command := exec.Command("go", "test", "-race", "-count=1", "-timeout", "30m", "-run", "^TestRealEdgeIdentityRuntime$", "./test/integration")
+	command := exec.Command("go", "test", "-race", "-count=1", "-timeout", "30m",
+		"-run", "^TestRealEdgeIdentityRuntime$", "./test/integration")
 	command.Dir = root
-	command.Env = append(os.Environ(), "CASHFLOW_RUNTIME_EVIDENCE_FILE="+path)
+	command.Env = append(os.Environ(),
+		runtimeevidence.FileEnvVar+"="+path,
+		runtimeevidence.KeyEnvVar+"="+runtimeevidence.EncodeKey(key),
+	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("execute real runtime for Godog bindings: %v\n%s", err, output)
 	}
-	if _, err := runtimeevidence.LoadForSource(path, root); err != nil {
+	evidence, err := runtimeevidence.LoadForSource(path, root, key)
+	if err != nil {
 		t.Fatalf("validate runtime evidence: %v", err)
 	}
-	t.Setenv("CASHFLOW_RUNTIME_EVIDENCE_FILE", path)
+	return evidence
+}
+
+func inheritedRuntimeEvidence(t *testing.T, root string) (runtimeevidence.Evidence, bool) {
+	t.Helper()
+	path := os.Getenv(runtimeevidence.FileEnvVar)
+	if path == "" {
+		return runtimeevidence.Evidence{}, false
+	}
+	key, err := runtimeevidence.KeyFromEnv()
+	if err != nil {
+		return runtimeevidence.Evidence{}, false
+	}
+	evidence, err := runtimeevidence.LoadForSource(path, root, key)
+	if err != nil {
+		return runtimeevidence.Evidence{}, false
+	}
+	return evidence, true
 }
