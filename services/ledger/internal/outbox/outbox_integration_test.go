@@ -9,10 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +23,8 @@ import (
 	"time"
 
 	apievents "github.com/higordiegoti/keyrus/api/events"
+	"github.com/higordiegoti/keyrus/services/ledger/internal/adapters/outbound/postgres"
+	"github.com/higordiegoti/keyrus/services/ledger/internal/application"
 	"github.com/higordiegoti/keyrus/services/ledger/migrations"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,15 +49,38 @@ type realFixture struct {
 	rabbitContainerName string
 	postgres            testcontainers.Container
 	rabbit              testcontainers.Container
+	execOverride        func(context.Context, []string) (int, io.Reader, error)
 }
 
 func TestRealRabbitMQPublisherAcceptance(t *testing.T) {
 	fixture := startRealFixture(t)
-	defer fixture.close(t)
+	t.Cleanup(func() { fixture.close(t) })
 
-	t.Run("broker outage preserves durable Ledger event", func(t *testing.T) {
+	t.Run("Ledger use case confirms without broker or Consolidado gRPC", func(t *testing.T) {
 		fixture.reset(t)
-		insertConfirmedEntry(t, fixture.pool, testEventID, testEntryID, testMerchant)
+		accepted := &atomic.Int32{}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		go func() {
+			for {
+				connection, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				accepted.Add(1)
+				_ = connection.Close()
+			}
+		}()
+		t.Setenv("CONSOLIDATION_GRPC_ADDRESS", listener.Addr().String())
+		recordViaLedgerUseCase(t, fixture.pool, "real-ledger-use-case")
+		var immediatelyClaimable bool
+		if err := fixture.pool.QueryRow(context.Background(), `
+SELECT available_at <= clock_timestamp() FROM ledger.outbox_event`).Scan(&immediatelyClaimable); err != nil || !immediatelyClaimable {
+			t.Fatalf("real Ledger outbox used a process clock for availability: claimable=%v error=%v", immediatelyClaimable, err)
+		}
 		schema, err := apievents.LedgerEntryConfirmedV1Schema()
 		if err != nil {
 			t.Fatal(err)
@@ -71,6 +98,110 @@ func TestRealRabbitMQPublisherAcceptance(t *testing.T) {
 			t.Fatal("unavailable broker must fail publication")
 		}
 		assertLedgerAndOutbox(t, fixture.pool, 1, 1, 0)
+		time.Sleep(20 * time.Millisecond)
+		if calls := accepted.Load(); calls != 0 {
+			t.Fatalf("Ledger confirmation called Consolidado gRPC: connections=%d", calls)
+		}
+	})
+
+	t.Run("versioned topology upgrades and rolls back exact legacy backlog", func(t *testing.T) {
+		fixture.installExactLegacy(t)
+		connection, channel := rabbitChannel(t, fixture.rabbitURL)
+		defer connection.Close()
+		defer channel.Close()
+		ids := []string{
+			"018f0000-0000-7000-8000-000000000601",
+			"018f0000-0000-7000-8000-000000000602",
+			"018f0000-0000-7000-8000-000000000603",
+		}
+		for _, id := range ids {
+			if err := channel.PublishWithContext(context.Background(), LegacyTopology().Exchange, LegacyTopology().RoutingKey, true, false,
+				amqp091.Publishing{DeliveryMode: amqp091.Persistent, MessageId: id, Body: []byte(id)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		waitForQueueCount(t, fixture.rabbitURL, LegacyTopology().Queue, len(ids))
+		broker := newRealBroker(t, fixture.rabbitURL, nil)
+		if err := broker.Ready(context.Background()); !errors.Is(err, ErrTopologyUpgradeRequired) {
+			t.Fatalf("new runtime did not fail closed on legacy topology: %v", err)
+		}
+		_ = broker.Close()
+		interruption := errors.New("injected migration interruption")
+		report, err := UpgradeTopology(context.Background(), TopologyMigrationConfig{
+			URL: fixture.rabbitURL, AllowInsecure: true, ConfirmBudget: 30 * time.Second,
+			AfterMove: func(_ string, moved int) error {
+				if moved == 1 {
+					return interruption
+				}
+				return nil
+			},
+		})
+		if !errors.Is(err, interruption) || report.Moved != 1 {
+			t.Fatalf("intermediate upgrade failure was not observable: report=%+v error=%v", report, err)
+		}
+		assertQueueIDs(t, fixture.rabbitURL, []string{LegacyTopology().Queue, DefaultTopology().Queue}, ids)
+		report, err = UpgradeTopology(context.Background(), TopologyMigrationConfig{
+			URL: fixture.rabbitURL, AllowInsecure: true, ConfirmBudget: 30 * time.Second,
+		})
+		if err != nil || report.Moved != 2 {
+			t.Fatalf("resume topology upgrade: report=%+v error=%v", report, err)
+		}
+		assertQueueIDs(t, fixture.rabbitURL, []string{DefaultTopology().Queue}, ids)
+		readyBroker := newRealBroker(t, fixture.rabbitURL, nil)
+		defer readyBroker.Close()
+		if err := readyBroker.Ready(context.Background()); err != nil {
+			t.Fatalf("runtime preflight after committed cutover: %v", err)
+		}
+		newID := "018f0000-0000-7000-8000-000000000604"
+		if err := channel.PublishWithContext(context.Background(), DefaultTopology().Exchange, DefaultTopology().RoutingKey, true, false,
+			amqp091.Publishing{DeliveryMode: amqp091.Persistent, MessageId: newID, Body: []byte(newID)}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, newID)
+		waitForQueueCount(t, fixture.rabbitURL, DefaultTopology().Queue, len(ids))
+		report, err = RollbackTopology(context.Background(), TopologyMigrationConfig{
+			URL: fixture.rabbitURL, AllowInsecure: true, ConfirmBudget: 30 * time.Second,
+		})
+		if err != nil || report.Moved != len(ids) {
+			t.Fatalf("rollback topology: report=%+v error=%v", report, err)
+		}
+		assertQueueIDs(t, fixture.rabbitURL, []string{LegacyTopology().Queue}, ids)
+		rollbackID := "018f0000-0000-7000-8000-000000000605"
+		if err := channel.PublishWithContext(context.Background(), LegacyTopology().Exchange, LegacyTopology().RoutingKey, true, false,
+			amqp091.Publishing{DeliveryMode: amqp091.Persistent, MessageId: rollbackID, Body: []byte(rollbackID)}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, rollbackID)
+		waitForQueueCount(t, fixture.rabbitURL, LegacyTopology().Queue, len(ids))
+		assertQueueIDs(t, fixture.rabbitURL, []string{LegacyTopology().Queue, DefaultTopology().Queue}, ids)
+		if _, err := UpgradeTopology(context.Background(), TopologyMigrationConfig{
+			URL: fixture.rabbitURL, AllowInsecure: true, ConfirmBudget: 30 * time.Second,
+		}); err != nil {
+			t.Fatalf("restore hardened topology after rollback proof: %v", err)
+		}
+	})
+
+	t.Run("topology preflight fails closed before incompatible mutation", func(t *testing.T) {
+		fixture.installExactLegacy(t)
+		connection, channel := rabbitChannel(t, fixture.rabbitURL)
+		if _, err := channel.QueueDelete(LegacyTopology().Queue, false, false, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := channel.QueueDeclare(LegacyTopology().Queue, true, false, false, false, nil); err != nil {
+			t.Fatal(err)
+		}
+		_ = channel.Close()
+		_ = connection.Close()
+		if _, err := UpgradeTopology(context.Background(), TopologyMigrationConfig{
+			URL: fixture.rabbitURL, AllowInsecure: true, ConfirmBudget: 30 * time.Second,
+		}); err == nil || !strings.Contains(err.Error(), "preflight failed before mutation") {
+			t.Fatalf("incompatible legacy queue did not fail actionable preflight: %v", err)
+		}
+		connection, channel = rabbitChannel(t, fixture.rabbitURL)
+		defer connection.Close()
+		if _, err := channel.QueueInspect(DefaultTopology().Queue); err == nil {
+			t.Fatal("preflight failure partially created the hardened queue")
+		}
 	})
 
 	t.Run("persistent AMQP confirm marks only after routing", func(t *testing.T) {
@@ -88,6 +219,48 @@ func TestRealRabbitMQPublisherAcceptance(t *testing.T) {
 		assertPersistentEnvelope(t, message, testEventID)
 		_ = message.Ack(false)
 		assertLedgerAndOutbox(t, fixture.pool, 1, 1, 1)
+	})
+
+	t.Run("persistent AMQP forwarding never calls Consolidado gRPC", func(t *testing.T) {
+		fixture.reset(t)
+		accepted := &atomic.Int32{}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		go func() {
+			for {
+				connection, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				accepted.Add(1)
+				_ = connection.Close()
+			}
+		}()
+		t.Setenv("CONSOLIDATION_GRPC_ADDRESS", listener.Addr().String())
+		recordViaLedgerUseCase(t, fixture.pool, "negative-grpc-oracle")
+		var eventID string
+		if err := fixture.pool.QueryRow(context.Background(), `SELECT event_id::text FROM ledger.outbox_event`).Scan(&eventID); err != nil {
+			t.Fatal(err)
+		}
+		broker := newRealBroker(t, fixture.rabbitURL, nil)
+		defer broker.Close()
+		store, _ := NewPostgresStore(fixture.pool)
+		worker := newTestWorker(t, store, broker, "negative-grpc", 3*time.Second)
+		if processed, err := worker.ProcessOnce(context.Background()); err != nil || processed != 1 {
+			t.Fatalf("forward real Ledger event: processed=%d error=%v", processed, err)
+		}
+		message := receive(t, fixture.rabbitURL, DefaultTopology().Queue, 3*time.Second)
+		if message.MessageId != eventID || message.DeliveryMode != amqp091.Persistent {
+			t.Fatalf("forwarding changed durable identity: id=%q mode=%d", message.MessageId, message.DeliveryMode)
+		}
+		_ = message.Ack(false)
+		time.Sleep(20 * time.Millisecond)
+		if calls := accepted.Load(); calls != 0 {
+			t.Fatalf("outbox forwarding called Consolidado gRPC: connections=%d", calls)
+		}
 	})
 
 	t.Run("kill before confirm republishes identical event id", func(t *testing.T) {
@@ -204,11 +377,10 @@ func TestRealRabbitMQPublisherAcceptance(t *testing.T) {
 			exitCode, outputReader, execErr := fixture.rabbitExec(inspectContext, []string{
 				"rabbitmqctl", "-q", "list_queues", "-p", "outbox_test", "name", "messages", "arguments",
 			})
-			var readErr error
-			output, readErr = io.ReadAll(outputReader)
+			output, execErr = readRabbitExecOutput(outputReader, execErr)
 			inspectCancel()
-			if execErr != nil || readErr != nil || exitCode != 0 {
-				t.Fatalf("inspect retained dead letter: exit=%d error=%v read=%v output=%s", exitCode, execErr, readErr, output)
+			if execErr != nil || exitCode != 0 {
+				t.Fatalf("inspect retained dead letter: exit=%d error=%v output=%s", exitCode, execErr, output)
 			}
 			sourceLine := ""
 			for _, line := range strings.Split(string(output), "\n") {
@@ -450,6 +622,106 @@ FROM ledger.outbox_event WHERE event_id = $1`, testEventID).Scan(&delta); err !=
 			t.Fatalf("stalled AMQP publish exceeded cancel budget: %s (%v)", elapsed, err)
 		}
 	})
+
+	t.Run("runtime shutdown joins real leased worker blocked on AMQP socket", func(t *testing.T) {
+		fixture.reset(t)
+		insertConfirmedEntry(t, fixture.pool, testEventID, testEntryID, testMerchant)
+		if _, err := fixture.pool.Exec(context.Background(), `
+UPDATE ledger.outbox_event
+SET payload = payload || jsonb_build_object('padding', repeat('x', $2))
+WHERE event_id = $1`, testEventID, 4<<20); err != nil {
+			t.Fatal(err)
+		}
+		proxy := startStallingProxy(t, fixture.rabbitURL)
+		defer proxy.Close()
+		schema, err := apievents.LedgerEntryConfirmedV1Schema()
+		if err != nil {
+			t.Fatal(err)
+		}
+		broker, err := NewRabbitBroker(RabbitConfig{
+			URL: proxy.URL(), AllowInsecure: true, Topology: DefaultTopology(), Schema: schema,
+			ConfirmTimeout: 30 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := broker.Ready(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		proxy.PauseClientWrites()
+		store, _ := NewPostgresStore(fixture.pool)
+		worker, err := NewWorker(store, broker, WorkerConfig{
+			Owner: "shutdown-real", BatchSize: 1, Lease: 40 * time.Second,
+			PollInterval: time.Millisecond, BackoffBase: time.Second, BackoffMax: time.Second,
+			PublishBudget: 30 * time.Second,
+		}, &Metrics{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.WriteHeader(http.StatusNoContent)
+		})}
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			result <- (Runtime{
+				Server: server, Listener: listener, Workers: []Runner{worker},
+				Brokers: []Broker{broker}, ShutdownTimeout: 5 * time.Second,
+			}).Run(ctx)
+		}()
+		response, err := http.Get("http://" + listener.Addr().String())
+		if err != nil {
+			cancel()
+			t.Fatalf("operations HTTP did not start: %v", err)
+		}
+		_ = response.Body.Close()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			var attempts int
+			var owner *string
+			if err := fixture.pool.QueryRow(context.Background(), `
+SELECT attempts, lease_owner FROM ledger.outbox_event WHERE event_id = $1`, testEventID).Scan(&attempts, &owner); err != nil {
+				cancel()
+				t.Fatal(err)
+			}
+			if attempts == 1 && owner != nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				cancel()
+				t.Fatalf("real worker never acquired lease: attempts=%d owner=%v", attempts, owner)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		started := time.Now()
+		cancel()
+		if err := <-result; err != nil {
+			t.Fatalf("runtime shutdown failed: %v", err)
+		}
+		if elapsed := time.Since(started); elapsed > 5*time.Second {
+			t.Fatalf("runtime shutdown exceeded budget: %s", elapsed)
+		}
+		if _, err := http.Get("http://" + listener.Addr().String()); err == nil {
+			t.Fatal("operations HTTP remained reachable after runtime shutdown")
+		}
+		if socket := broker.activeSocket(); socket != nil {
+			t.Fatalf("broker socket survived runtime shutdown: %v", socket)
+		}
+		var attempts int
+		var owner *string
+		var published *time.Time
+		if err := fixture.pool.QueryRow(context.Background(), `
+SELECT attempts, lease_owner, published_at FROM ledger.outbox_event WHERE event_id = $1`, testEventID).Scan(&attempts, &owner, &published); err != nil {
+			t.Fatal(err)
+		}
+		if attempts != 1 || owner != nil || published != nil {
+			t.Fatalf("shutdown did not leave recoverable lease state: attempts=%d owner=%v published=%v", attempts, owner, published)
+		}
+	})
 }
 
 type stallingProxy struct {
@@ -648,6 +920,9 @@ func startRealFixture(t *testing.T) *realFixture {
 }
 
 func (fixture *realFixture) rabbitExec(ctx context.Context, command []string) (int, io.Reader, error) {
+	if fixture.execOverride != nil {
+		return fixture.execOverride(ctx, command)
+	}
 	if fixture.rabbit != nil {
 		return fixture.rabbit.Exec(ctx, command)
 	}
@@ -662,6 +937,30 @@ func (fixture *realFixture) rabbitExec(ctx context.Context, command []string) (i
 		return exitError.ExitCode(), bytes.NewReader(output), nil
 	}
 	return -1, bytes.NewReader(output), err
+}
+
+func readRabbitExecOutput(reader io.Reader, executionError error) ([]byte, error) {
+	if executionError != nil {
+		if reader == nil {
+			return nil, executionError
+		}
+		if closer, ok := reader.(io.Closer); ok {
+			defer closer.Close()
+		}
+		output, readError := io.ReadAll(reader)
+		return output, errors.Join(executionError, readError)
+	}
+	if reader == nil {
+		return nil, errors.New("RabbitMQ command returned a nil output reader")
+	}
+	if closer, ok := reader.(io.Closer); ok {
+		defer closer.Close()
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		return output, fmt.Errorf("read RabbitMQ command output: %w", err)
+	}
+	return output, nil
 }
 
 func (fixture *realFixture) restartRabbit(ctx context.Context, stopTimeout time.Duration) error {
@@ -782,17 +1081,114 @@ func (fixture *realFixture) reset(t *testing.T) {
 		`TRUNCATE ledger.outbox_event, ledger.idempotency_record, ledger.ledger_entry, ledger.merchant_position`); err != nil {
 		t.Fatal(err)
 	}
-	connection, channel := rabbitChannel(t, fixture.rabbitURL)
+	fixture.installExactLegacy(t)
+	if _, err := UpgradeTopology(context.Background(), TopologyMigrationConfig{
+		URL: fixture.rabbitURL, AllowInsecure: true, ConfirmBudget: 30 * time.Second,
+	}); err != nil {
+		t.Fatalf("install test hardened topology: %v", err)
+	}
+}
+
+func (fixture *realFixture) installExactLegacy(t *testing.T) {
+	t.Helper()
+	connection, err := amqp091.Dial(fixture.rabbitURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	deleteExchangeIfPresent(t, connection, topologyCutoverMarker, "fanout")
+	for _, topology := range []Topology{DefaultTopology(), LegacyTopology()} {
+		deleteQueueIfPresent(t, connection, topology.Queue)
+		deleteQueueIfPresent(t, connection, topology.DLQ)
+	}
+	channel, err := connection.Channel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer channel.Close()
+	legacy := LegacyTopology()
+	if err := channel.ExchangeDeclare(legacy.Exchange, "topic", true, false, false, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := channel.ExchangeDeclare(legacy.DLX, "topic", true, false, false, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	arguments := amqp091.Table{
+		"x-queue-type": "quorum", "x-dead-letter-exchange": legacy.DLX,
+		"x-dead-letter-routing-key": legacy.RoutingKey,
+	}
+	if _, err := channel.QueueDeclare(legacy.Queue, true, false, false, false, arguments); err != nil {
+		t.Fatalf("install exact 0ac21b5 source queue: %v", err)
+	}
+	if err := channel.QueueBind(legacy.Queue, legacy.RoutingKey, legacy.Exchange, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := channel.QueueDeclare(legacy.DLQ, true, false, false, false, amqp091.Table{"x-queue-type": "quorum"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := channel.QueueBind(legacy.DLQ, legacy.RoutingKey, legacy.DLX, false, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func deleteQueueIfPresent(t *testing.T, connection *amqp091.Connection, name string) {
+	t.Helper()
+	channel, err := connection.Channel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := channel.QueueInspect(name); err != nil {
+		_ = channel.Close()
+		return
+	}
+	if _, err := channel.QueueDelete(name, false, false, false); err != nil {
+		_ = channel.Close()
+		t.Fatalf("delete test queue %s: %v", name, err)
+	}
+	_ = channel.Close()
+}
+
+func deleteExchangeIfPresent(t *testing.T, connection *amqp091.Connection, name, kind string) {
+	t.Helper()
+	channel, err := connection.Channel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := channel.ExchangeDeclarePassive(name, kind, true, false, true, false, nil); err != nil {
+		_ = channel.Close()
+		return
+	}
+	if err := channel.ExchangeDelete(name, false, false); err != nil {
+		_ = channel.Close()
+		t.Fatalf("delete test exchange %s: %v", name, err)
+	}
+	_ = channel.Close()
+}
+
+func assertQueueIDs(t *testing.T, rabbitURL string, queues, expected []string) {
+	t.Helper()
+	connection, channel := rabbitChannel(t, rabbitURL)
 	defer connection.Close()
 	defer channel.Close()
-	if err := declareTopology(channel, DefaultTopology()); err != nil {
-		t.Fatal(err)
+	got := make([]string, 0, len(expected))
+	for _, queue := range queues {
+		state, err := channel.QueueInspect(queue)
+		if err != nil {
+			t.Fatalf("inspect queue %s: %v", queue, err)
+		}
+		for range state.Messages {
+			delivery, ok, err := channel.Get(queue, false)
+			if err != nil || !ok {
+				t.Fatalf("read queue %s identity: present=%v error=%v", queue, ok, err)
+			}
+			got = append(got, delivery.MessageId)
+		}
 	}
-	if _, err := channel.QueuePurge(DefaultTopology().Queue, false); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := channel.QueuePurge(DefaultTopology().DLQ, false); err != nil {
-		t.Fatal(err)
+	slices.Sort(got)
+	want := append([]string(nil), expected...)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("queue event IDs changed: got=%v want=%v", got, want)
 	}
 }
 
@@ -829,6 +1225,33 @@ VALUES ($1, $2, $3, 1, $4, $5::jsonb, $6, $6)`, eventID, entryID, merchantID, Ev
 	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func recordViaLedgerUseCase(t *testing.T, pool *pgxpool.Pool, idempotencyKey string) application.EntryResult {
+	t.Helper()
+	repository, err := postgres.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codec, err := application.NewCursorCodec([]byte("ledger-test-cursor-secret-32bytes!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := application.NewService(application.Dependencies{
+		UnitOfWork: repository, Reader: repository, Cursors: codec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := ledger.CreateEntry(context.Background(), application.CreateEntryInput{
+		MerchantID: testMerchant, IdempotencyKey: idempotencyKey, Type: "credit",
+		AmountMinor: 2500, Currency: "BRL", TimeZone: "America/Fortaleza",
+		Description: "private note", Traceparent: testTrace,
+	})
+	if err != nil || created.State != application.EntryStateConfirmed {
+		t.Fatalf("confirm real Ledger entry: result=%+v error=%v", created, err)
+	}
+	return created
 }
 
 func newRealBroker(t *testing.T, rabbitURL string, hook func(Event) error) *RabbitBroker {
@@ -961,16 +1384,124 @@ func TestEnvelopeRejectsSensitiveFieldsAndIdentityMismatch(t *testing.T) {
 		EventID: testEventID, EventType: EventType, OccurredAt: now,
 		MerchantID: testMerchant, MerchantPosition: 1, AggregateID: testEntryID,
 	}
-	payload["metadata"] = map[string]any{"description": "private note"}
-	event.Payload = encode()
-	if _, err := validateEnvelope(event); err == nil || !strings.Contains(err.Error(), "prohibited sensitive field") {
-		t.Fatalf("nested sensitive field was accepted: %v", err)
+	for _, field := range []string{
+		"Description", "access_token", "refresh-token", "client.secret", "API Key",
+		"cardNumber", "card_number", "PAN", "cvv2", "Authorization", "userCredential",
+	} {
+		payload["extensions"] = []any{map[string]any{"nested": map[string]any{field: "must-not-leak"}}}
+		event.Payload = encode()
+		if _, err := validateEnvelope(event); err == nil || !strings.Contains(err.Error(), "prohibited sensitive field") {
+			t.Fatalf("nested sensitive field %q was accepted: %v", field, err)
+		}
 	}
-	delete(payload, "metadata")
-	payload["event_id"] = "018f0000-0000-7000-8000-000000000599"
+	delete(payload, "extensions")
+	mismatches := map[string]any{
+		"event_id":   "018f0000-0000-7000-8000-000000000599",
+		"event_type": "other.event.v1", "merchant_id": testEntryID,
+		"merchant_position": 2, "entry_id": testMerchant,
+		"occurred_at": now.Add(time.Second), "confirmed_at": now.Add(time.Second),
+	}
+	for field, wrong := range mismatches {
+		original := payload[field]
+		payload[field] = wrong
+		event.Payload = encode()
+		if _, err := validateEnvelope(event); err == nil || !strings.Contains(err.Error(), "identity") {
+			t.Fatalf("mismatched body field %s was accepted: %v", field, err)
+		}
+		payload[field] = original
+	}
 	event.Payload = encode()
-	if _, err := validateEnvelope(event); err == nil || !strings.Contains(err.Error(), "identity") {
-		t.Fatalf("mismatched identity was accepted: %v", err)
+	envelope, err := validateEnvelope(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := publishingForEvent(event, envelope)
+	mutations := map[string]func(*amqp091.Publishing){
+		"MessageId":     func(value *amqp091.Publishing) { value.MessageId = "wrong" },
+		"CorrelationId": func(value *amqp091.Publishing) { value.CorrelationId = "wrong" },
+		"Type":          func(value *amqp091.Publishing) { value.Type = "wrong" },
+		"Timestamp":     func(value *amqp091.Publishing) { value.Timestamp = now.Add(time.Second) },
+		"DeliveryMode":  func(value *amqp091.Publishing) { value.DeliveryMode = amqp091.Transient },
+		"ContentType":   func(value *amqp091.Publishing) { value.ContentType = "text/plain" },
+		"AppId":         func(value *amqp091.Publishing) { value.AppId = "wrong" },
+	}
+	for header := range base.Headers {
+		header := header
+		mutations["header "+header] = func(value *amqp091.Publishing) { value.Headers[header] = "wrong" }
+	}
+	for name, mutate := range mutations {
+		candidate := base
+		candidate.Headers = amqp091.Table{}
+		for header, value := range base.Headers {
+			candidate.Headers[header] = value
+		}
+		mutate(&candidate)
+		if err := validatePublishingIdentity(candidate, event, envelope); err == nil {
+			t.Fatalf("mismatched AMQP %s was accepted", name)
+		}
+	}
+}
+
+type closeTrackingReader struct {
+	io.Reader
+	closed *atomic.Bool
+}
+
+func (reader closeTrackingReader) Close() error {
+	reader.closed.Store(true)
+	return nil
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("injected read failure") }
+
+func TestRabbitExecFailuresNeverPanicAndCloseReaders(t *testing.T) {
+	closed := &atomic.Bool{}
+	output, err := readRabbitExecOutput(closeTrackingReader{Reader: strings.NewReader("ok"), closed: closed}, nil)
+	if err != nil || string(output) != "ok" || !closed.Load() {
+		t.Fatalf("successful command output was not read and closed: output=%q closed=%v error=%v", output, closed.Load(), err)
+	}
+	if _, err := readRabbitExecOutput(nil, nil); err == nil {
+		t.Fatal("nil reader was accepted")
+	}
+	if _, err := readRabbitExecOutput(failingReader{}, nil); err == nil {
+		t.Fatal("reader failure was accepted")
+	}
+	executionError := errors.New("injected exec failure")
+	if _, err := readRabbitExecOutput(nil, executionError); !errors.Is(err, executionError) {
+		t.Fatalf("exec failure was obscured: %v", err)
+	}
+	closed.Store(false)
+	output, err = readRabbitExecOutput(closeTrackingReader{Reader: strings.NewReader("diagnostic"), closed: closed}, executionError)
+	if string(output) != "diagnostic" || !closed.Load() || !errors.Is(err, executionError) {
+		t.Fatalf("exec diagnostic was not preserved and closed: output=%q closed=%v error=%v", output, closed.Load(), err)
+	}
+	fixture := &realFixture{execOverride: func(ctx context.Context, _ []string) (int, io.Reader, error) {
+		<-ctx.Done()
+		return -1, nil, ctx.Err()
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	exitCode, reader, execErr := fixture.rabbitExec(ctx, []string{"rabbitmqctl"})
+	if _, err := readRabbitExecOutput(reader, execErr); exitCode != -1 || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout path was not controlled: exit=%d error=%v", exitCode, err)
+	}
+	fixture.close(t)
+	fixture.close(t)
+}
+
+func TestRabbitCloseNormalizesOnlyExpectedClosedConnections(t *testing.T) {
+	if err := ignoreAlreadyClosed(net.ErrClosed); err != nil {
+		t.Fatalf("standard closed-network error leaked from shutdown: %v", err)
+	}
+	closedWrite := errors.New("write tcp 127.0.0.1:1->127.0.0.1:2: use of closed network connection")
+	if err := ignoreAlreadyClosed(closedWrite); err != nil {
+		t.Fatalf("closed AMQP write leaked from shutdown: %v", err)
+	}
+	realFailure := errors.New("permission denied")
+	if err := ignoreAlreadyClosed(realFailure); !errors.Is(err, realFailure) {
+		t.Fatalf("real close failure was hidden: %v", err)
 	}
 }
 
@@ -1038,5 +1569,5 @@ func TestErrorSanitizationRemovesCredentials(t *testing.T) {
 func ExampleDefaultTopology() {
 	topology := DefaultTopology()
 	fmt.Println(topology.Exchange, topology.Queue)
-	// Output: ledger.events consolidation.ledger-entry-confirmed.v1
+	// Output: ledger.events consolidation.ledger-entry-confirmed.v2
 }

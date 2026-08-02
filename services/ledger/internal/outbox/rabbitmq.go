@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -23,13 +24,27 @@ type Topology struct {
 	DLQ        string
 }
 
+const topologyCutoverMarker = "ledger.outbox.topology.v2.ready"
+
+var ErrTopologyUpgradeRequired = errors.New("RabbitMQ outbox topology upgrade required")
+
 func DefaultTopology() Topology {
 	return Topology{
 		Exchange:   "ledger.events",
 		RoutingKey: EventType,
-		Queue:      "consolidation.ledger-entry-confirmed.v1",
+		Queue:      "consolidation.ledger-entry-confirmed.v2",
 		DLX:        "ledger.events.dlx",
-		DLQ:        "consolidation.ledger-entry-confirmed.v1.dlq",
+		DLQ:        "consolidation.ledger-entry-confirmed.v2.dlq",
+	}
+}
+
+// LegacyTopology is the exact topology shipped by 0ac21b5. Its immutable
+// queue arguments must never be redeclared by the hardened runtime.
+func LegacyTopology() Topology {
+	return Topology{
+		Exchange: "ledger.events", RoutingKey: EventType,
+		Queue: "consolidation.ledger-entry-confirmed.v1", DLX: "ledger.events.dlx",
+		DLQ: "consolidation.ledger-entry-confirmed.v1.dlq",
 	}
 }
 
@@ -150,32 +165,17 @@ returnsDrained:
 		<-deadlineWatcherDone
 		_ = socket.SetDeadline(time.Time{})
 	}()
+	publishing := publishingForEvent(event, envelope)
+	if err := validatePublishingIdentity(publishing, event, envelope); err != nil {
+		return err
+	}
 	confirmation, err := b.channel.PublishWithDeferredConfirmWithContext(
 		publishContext,
 		b.config.Topology.Exchange,
 		b.config.Topology.RoutingKey,
 		true,
 		false,
-		amqp091.Publishing{
-			Headers: amqp091.Table{
-				"event_id":          event.EventID,
-				"event_type":        event.EventType,
-				"merchant_id":       event.MerchantID,
-				"merchant_position": event.MerchantPosition,
-				"entry_id":          envelope.EntryID,
-				"traceparent":       envelope.Traceparent,
-				"occurred_at":       event.OccurredAt.UTC().Format(time.RFC3339Nano),
-				"confirmed_at":      envelope.ConfirmedAt.UTC().Format(time.RFC3339Nano),
-			},
-			ContentType:   "application/json",
-			DeliveryMode:  amqp091.Persistent,
-			MessageId:     event.EventID,
-			CorrelationId: event.AggregateID,
-			Timestamp:     event.OccurredAt.UTC(),
-			Type:          event.EventType,
-			AppId:         "outbox-publisher",
-			Body:          append([]byte(nil), event.Payload...),
-		},
+		publishing,
 	)
 	if err != nil {
 		b.resetLocked()
@@ -222,6 +222,44 @@ confirmed:
 	}
 }
 
+func publishingForEvent(event Event, envelope eventEnvelope) amqp091.Publishing {
+	return amqp091.Publishing{
+		Headers: amqp091.Table{
+			"event_id": event.EventID, "event_type": event.EventType,
+			"merchant_id": event.MerchantID, "merchant_position": event.MerchantPosition,
+			"entry_id": envelope.EntryID, "traceparent": envelope.Traceparent,
+			"occurred_at":  event.OccurredAt.UTC().Format(time.RFC3339Nano),
+			"confirmed_at": envelope.ConfirmedAt.UTC().Format(time.RFC3339Nano),
+		},
+		ContentType: "application/json", DeliveryMode: amqp091.Persistent,
+		MessageId: event.EventID, CorrelationId: event.AggregateID,
+		Timestamp: event.OccurredAt.UTC(), Type: event.EventType,
+		AppId: "outbox-publisher", Body: append([]byte(nil), event.Payload...),
+	}
+}
+
+func validatePublishingIdentity(publishing amqp091.Publishing, event Event, envelope eventEnvelope) error {
+	wantHeaders := map[string]any{
+		"event_id": event.EventID, "event_type": event.EventType,
+		"merchant_id": event.MerchantID, "merchant_position": event.MerchantPosition,
+		"entry_id": envelope.EntryID, "traceparent": envelope.Traceparent,
+		"occurred_at":  event.OccurredAt.UTC().Format(time.RFC3339Nano),
+		"confirmed_at": envelope.ConfirmedAt.UTC().Format(time.RFC3339Nano),
+	}
+	for name, want := range wantHeaders {
+		if fmt.Sprint(publishing.Headers[name]) != fmt.Sprint(want) {
+			return fmt.Errorf("AMQP header %s does not match outbox identity", name)
+		}
+	}
+	if publishing.MessageId != event.EventID || publishing.CorrelationId != event.AggregateID ||
+		publishing.Type != event.EventType || !publishing.Timestamp.Equal(event.OccurredAt) ||
+		publishing.DeliveryMode != amqp091.Persistent || publishing.ContentType != "application/json" ||
+		publishing.AppId != "outbox-publisher" {
+		return errorsNew("AMQP properties do not match outbox identity")
+	}
+	return nil
+}
+
 type eventEnvelope struct {
 	EventID          string    `json:"event_id"`
 	EventType        string    `json:"event_type"`
@@ -255,15 +293,32 @@ func validateEnvelope(event Event) (eventEnvelope, error) {
 }
 
 var prohibitedPayloadFields = map[string]struct{}{
-	"authorization": {}, "card_number": {}, "credential": {}, "credentials": {},
-	"cvv": {}, "description": {}, "jwt": {}, "password": {}, "secret": {}, "token": {},
+	"authorization": {}, "cardnumber": {}, "credential": {}, "credentials": {},
+	"cvv": {}, "cvv2": {}, "description": {}, "jwt": {}, "pan": {},
+	"password": {}, "secret": {}, "clientsecret": {}, "token": {},
+	"accesstoken": {}, "refreshtoken": {}, "apikey": {},
+}
+
+var prohibitedPayloadFamilies = []string{
+	"authorization", "cardnumber", "credential", "cvv", "description",
+	"password", "secret", "token", "apikey",
 }
 
 func prohibitedField(value any) string {
 	switch current := value.(type) {
 	case map[string]any:
 		for name, nested := range current {
-			if _, prohibited := prohibitedPayloadFields[strings.ToLower(name)]; prohibited {
+			normalized := normalizePayloadField(name)
+			_, prohibited := prohibitedPayloadFields[normalized]
+			if !prohibited {
+				for _, family := range prohibitedPayloadFamilies {
+					if strings.Contains(normalized, family) {
+						prohibited = true
+						break
+					}
+				}
+			}
+			if prohibited {
 				return name
 			}
 			if found := prohibitedField(nested); found != "" {
@@ -278,6 +333,18 @@ func prohibitedField(value any) string {
 		}
 	}
 	return ""
+}
+
+func normalizePayloadField(name string) string {
+	return strings.Map(func(character rune) rune {
+		if character >= 'A' && character <= 'Z' {
+			return character + ('a' - 'A')
+		}
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' {
+			return character
+		}
+		return -1
+	}, name)
 }
 
 func (b *RabbitBroker) Ready(ctx context.Context) error {
@@ -324,6 +391,11 @@ func (b *RabbitBroker) ensureChannel(ctx context.Context) error {
 		_ = conn.Close()
 		return fmt.Errorf("open RabbitMQ channel: %w", err)
 	}
+	if err := requireTopologyCutover(channel); err != nil {
+		_ = channel.Close()
+		_ = conn.Close()
+		return err
+	}
 	if err := declareTopology(channel, b.config.Topology); err != nil {
 		_ = channel.Close()
 		_ = conn.Close()
@@ -340,6 +412,13 @@ func (b *RabbitBroker) ensureChannel(ctx context.Context) error {
 	return nil
 }
 
+func requireTopologyCutover(channel *amqp091.Channel) error {
+	if err := channel.ExchangeDeclarePassive(topologyCutoverMarker, "fanout", true, false, true, false, nil); err != nil {
+		return fmt.Errorf("%w: run outbox-topology upgrade before starting publishers", ErrTopologyUpgradeRequired)
+	}
+	return nil
+}
+
 func declareTopology(channel *amqp091.Channel, topology Topology) error {
 	if err := channel.ExchangeDeclare(topology.Exchange, "topic", true, false, false, false, nil); err != nil {
 		return fmt.Errorf("declare Ledger exchange: %w", err)
@@ -347,14 +426,7 @@ func declareTopology(channel *amqp091.Channel, topology Topology) error {
 	if err := channel.ExchangeDeclare(topology.DLX, "topic", true, false, false, false, nil); err != nil {
 		return fmt.Errorf("declare Ledger dead-letter exchange: %w", err)
 	}
-	queueArguments := amqp091.Table{
-		"x-queue-type":              "quorum",
-		"x-dead-letter-exchange":    topology.DLX,
-		"x-dead-letter-routing-key": topology.RoutingKey,
-		"x-dead-letter-strategy":    "at-least-once",
-		"x-overflow":                "reject-publish",
-	}
-	if _, err := channel.QueueDeclare(topology.Queue, true, false, false, false, queueArguments); err != nil {
+	if _, err := channel.QueueDeclare(topology.Queue, true, false, false, false, hardenedQueueArguments(topology)); err != nil {
 		return fmt.Errorf("declare consolidation queue: %w", err)
 	}
 	if err := channel.QueueBind(topology.Queue, topology.RoutingKey, topology.Exchange, false, nil); err != nil {
@@ -375,10 +447,10 @@ func (b *RabbitBroker) Close() error {
 	defer b.mu.Unlock()
 	var result error
 	if b.channel != nil && !b.channel.IsClosed() {
-		result = b.channel.Close()
+		result = ignoreAlreadyClosed(b.channel.Close())
 	}
 	if b.conn != nil && !b.conn.IsClosed() {
-		if err := b.conn.Close(); result == nil {
+		if err := ignoreAlreadyClosed(b.conn.Close()); result == nil {
 			result = err
 		}
 	}
@@ -386,6 +458,20 @@ func (b *RabbitBroker) Close() error {
 	b.conn = nil
 	b.setActiveSocket(nil)
 	return result
+}
+
+func ignoreAlreadyClosed(err error) error {
+	if err == nil || errors.Is(err, amqp091.ErrClosed) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	var protocolError *amqp091.Error
+	if errors.As(err, &protocolError) && protocolError.Code == 504 {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "use of closed network connection") {
+		return nil
+	}
+	return err
 }
 
 func (b *RabbitBroker) resetLocked() {
