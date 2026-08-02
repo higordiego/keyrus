@@ -18,6 +18,7 @@ import (
 )
 
 type Metrics struct {
+	entrypoint         atomic.Uint64
 	requests           atomic.Uint64
 	rejections         atomic.Uint64
 	failures           atomic.Uint64
@@ -42,6 +43,21 @@ func HTTPServer(handler http.Handler) *http.Server {
 	}
 }
 
+// EntrypointMiddleware counts every request that reaches the adapter's HTTP
+// listener, before any authentication decision runs. It exists so a caller can
+// prove the edge never forwarded a rejected request: the regular request
+// counter only advances inside the authenticated handler, so it cannot tell
+// "the edge rejected the call" apart from "the edge forwarded it and this
+// adapter's own auth middleware rejected it afterwards." This counter moves in
+// both cases when the adapter is reached at all, and only in the second case
+// when the edge is the one making the decision.
+func EntrypointMiddleware(metrics *Metrics, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		metrics.entrypoint.Add(1)
+		next.ServeHTTP(writer, request)
+	})
+}
+
 func (m *Metrics) Observe(request *http.Request, status int) {
 	m.requests.Add(1)
 	if request.Header.Get("Idempotency-Key") != "" {
@@ -63,11 +79,13 @@ func (m *Metrics) Handler(service string) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = fmt.Fprintf(writer,
-			"cashflow_http_requests_total{service=%q} %d\n"+
+			"cashflow_http_entrypoint_total{service=%q} %d\n"+
+				"cashflow_http_requests_total{service=%q} %d\n"+
 				"cashflow_http_rejections_total{service=%q} %d\n"+
 				"cashflow_http_failures_total{service=%q} %d\n"+
 				"cashflow_http_idempotency_header_total{service=%q} %d\n"+
 				"cashflow_http_trace_header_total{service=%q} %d\n",
+			service, m.entrypoint.Load(),
 			service, m.requests.Load(), service, m.rejections.Load(), service, m.failures.Load(),
 			service, m.idempotencyHeaders.Load(), service, m.traceHeaders.Load())
 	})

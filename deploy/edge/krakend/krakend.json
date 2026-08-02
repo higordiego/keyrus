@@ -18,7 +18,7 @@
   },
   "extra_config": {
     "router": {
-      "logger_skip_paths": ["/__health"],
+      "disable_health": true,
       "return_error_msg": false,
       "remove_extra_slash": false,
       "auto_options": false,

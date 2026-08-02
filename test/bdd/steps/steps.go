@@ -13,25 +13,30 @@ import (
 	"context"
 
 	"github.com/cucumber/godog"
+	"github.com/higordiegoti/keyrus/test/support/runtimeevidence"
 )
 
-// Initialize registers only real bindings for tags listed in the manifest.
-// Godog calls it once per scenario, so each scenario gets an isolated world and
-// execution order cannot matter.
-func Initialize(scenario *godog.ScenarioContext) {
-	w := newWorld()
+// Initialize registers only real bindings for tags listed in the manifest. The
+// attested evidence of the real run is injected by the caller that produced it,
+// so a binding can never pick up an artifact left on disk. Godog calls the
+// returned initializer once per scenario, giving each scenario an isolated world
+// so execution order cannot matter.
+func Initialize(evidence runtimeevidence.Evidence) func(*godog.ScenarioContext) {
+	return func(scenario *godog.ScenarioContext) {
+		w := newWorld(evidence)
 
-	scenario.Before(func(ctx context.Context, current *godog.Scenario) (context.Context, error) {
-		return ctx, w.prepare(current)
-	})
-	scenario.After(func(ctx context.Context, _ *godog.Scenario, err error) (context.Context, error) {
-		w.release()
-		return ctx, err
-	})
+		scenario.Before(func(ctx context.Context, current *godog.Scenario) (context.Context, error) {
+			return ctx, w.prepare(current)
+		})
+		scenario.After(func(ctx context.Context, _ *godog.Scenario, err error) (context.Context, error) {
+			w.release()
+			return ctx, err
+		})
 
-	registerTenantIsolation(scenario, w)
-	registerPublicEdge(scenario, w)
-	registerPrivateSurface(scenario, w)
+		registerTenantIsolation(scenario, w)
+		registerPublicEdge(scenario, w)
+		registerPrivateSurface(scenario, w)
+	}
 }
 
 // registerTenantIsolation covers @SCN-RNF06-001, @SCN-RNF06-002 and

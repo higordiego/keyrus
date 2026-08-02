@@ -69,6 +69,20 @@ case "$rendered" in
 	;;
 esac
 
+# OUTPUT names the import file itself. A destination that resolves to a
+# directory -- directly or through a symlink -- would silently turn the rename
+# into a write *inside* that directory, so the caller would be told the realm
+# was written while the requested path still holds no credential.
+if [ -d "$OUTPUT" ]; then
+	echo "render-realm.sh: $OUTPUT resolves to a directory; refusing to write the realm outside the requested path" >&2
+	exit 1
+fi
+output_directory=$(dirname -- "$OUTPUT")
+if [ ! -d "$output_directory" ]; then
+	echo "render-realm.sh: $output_directory does not exist" >&2
+	exit 1
+fi
+
 umask 077
 temporary=$(mktemp "${OUTPUT}.tmp.XXXXXX")
 cleanup() {
@@ -82,4 +96,10 @@ printf '%s\n' "$rendered" >"$temporary"
 # mode while truncating it in place.
 mv -f -- "$temporary" "$OUTPUT"
 trap - EXIT HUP INT TERM
+# Success is only reported once the requested path itself is the regular file
+# holding the realm, never a symlink or a directory entry beside it.
+if [ ! -f "$OUTPUT" ] || [ -L "$OUTPUT" ]; then
+	echo "render-realm.sh: $OUTPUT is not the rendered realm file" >&2
+	exit 1
+fi
 echo "render-realm.sh: wrote $OUTPUT"

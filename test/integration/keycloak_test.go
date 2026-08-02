@@ -49,7 +49,9 @@ func configurePublicDockerBuild(t *testing.T, temporary string) {
 	t.Setenv("DOCKER_CONFIG", dockerConfig)
 }
 
-func renderRealmAt(t *testing.T, output string, secrets map[string]string) {
+// runRealmRenderer invokes the shipped script and returns its combined output so
+// negative cases can assert on both the exit status and the reported message.
+func runRealmRenderer(t *testing.T, output string, secrets map[string]string) ([]byte, error) {
 	t.Helper()
 	script := filepath.Join("..", "..", "deploy", "identity", "keycloak", "render-realm.sh")
 
@@ -58,7 +60,12 @@ func renderRealmAt(t *testing.T, output string, secrets map[string]string) {
 	for name, value := range secrets {
 		command.Env = append(command.Env, name+"="+value)
 	}
-	if combined, err := command.CombinedOutput(); err != nil {
+	return command.CombinedOutput()
+}
+
+func renderRealmAt(t *testing.T, output string, secrets map[string]string) {
+	t.Helper()
+	if combined, err := runRealmRenderer(t, output, secrets); err != nil {
 		t.Fatalf("render Keycloak realm: %v: %s", err, combined)
 	}
 
@@ -173,6 +180,42 @@ func TestRealmRendererTreatsShellSyntaxAsData(t *testing.T) {
 	}
 	if !strings.Contains(string(contents), malicious) {
 		t.Fatal("shell-like secret content was not preserved as inert data")
+	}
+}
+
+func TestRealmRendererRefusesDestinationThatResolvesToDirectory(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "destination")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "realm.json")
+	if err := os.Symlink(destination, output); err != nil {
+		t.Fatal(err)
+	}
+
+	combined, err := runRealmRenderer(t, output, map[string]string{
+		"CASHFLOW_CONSOLIDATION_CLIENT_SECRET":  "symlink-consolidation",
+		"CASHFLOW_RECONCILIATION_CLIENT_SECRET": "symlink-reconciliation",
+		"CASHFLOW_MERCHANT_A_PASSWORD":          "symlink-a",
+		"CASHFLOW_MERCHANT_B_PASSWORD":          "symlink-b",
+	})
+	if err == nil {
+		t.Fatalf("renderer reported success for a symlink-to-directory destination: %s", combined)
+	}
+	if !strings.Contains(string(combined), "resolves to a directory") {
+		t.Fatalf("renderer failed for an unrelated reason: %s", combined)
+	}
+	if strings.Contains(string(combined), "wrote ") {
+		t.Fatalf("renderer announced success while refusing the destination: %s", combined)
+	}
+
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("renderer leaked %d file(s) into the symlinked directory: %v", len(entries), entries)
 	}
 }
 
