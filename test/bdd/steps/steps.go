@@ -83,9 +83,9 @@ func (s *publisherScenario) assertEvidence() error {
 		return fmt.Errorf("publisher BDD assertion has no arranged scenario")
 	}
 	testByTag := map[string]string{
-		"@SCN-RNF01-002": "^TestRealRabbitMQPublisherAcceptance$/^broker_outage_preserves_durable_Ledger_event$",
+		"@SCN-RNF01-002": "^TestRealRabbitMQPublisherAcceptance$/^Ledger_use_case_confirms_without_broker_or_Consolidado_gRPC$",
 		"@SCN-RNF01-004": "^TestRealRabbitMQPublisherAcceptance$/^kill_before_confirm_republishes_identical_event_id$",
-		"@SCN-RNF09-006": "^TestRealRabbitMQPublisherAcceptance$/^persistent_AMQP_confirm_marks_only_after_routing$",
+		"@SCN-RNF09-006": "^TestRealRabbitMQPublisherAcceptance$/^persistent_AMQP_forwarding_never_calls_Consolidado_gRPC$",
 	}
 	requiredByTag := map[string][]string{
 		"@SCN-RNF01-002": {"transport-unavailable", "ledger-healthy", "entry-recorded"},

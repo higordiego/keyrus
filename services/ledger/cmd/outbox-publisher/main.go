@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -40,10 +39,6 @@ type config struct {
 	confirmTimeout time.Duration
 	backoffBase    time.Duration
 	backoffMax     time.Duration
-}
-
-type workerRunner interface {
-	Run(context.Context) error
 }
 
 func main() {
@@ -124,69 +119,15 @@ func run(ctx context.Context, configuration config, logger *slog.Logger) error {
 	}()
 
 	server := operationsServer(configuration.httpAddress, store, readinessBrokers, metrics)
-	serverErrors := make(chan error, 1)
-	go func() {
-		logger.Info("outbox operations server listening", "address", configuration.httpAddress)
-		serverErrors <- server.ListenAndServe()
-	}()
-	workerContext, stopWorkers := context.WithCancel(ctx)
-	defer stopWorkers()
-	runners := make([]workerRunner, 0, len(workers))
+	logger.Info("outbox operations server listening", "address", configuration.httpAddress)
+	runners := make([]outbox.Runner, 0, len(workers))
 	for _, worker := range workers {
 		runners = append(runners, worker)
 	}
-	workerErrors, workerGroup := startWorkers(workerContext, runners)
-
-	var runError error
-	select {
-	case <-ctx.Done():
-	case err := <-serverErrors:
-		if !errors.Is(err, http.ErrServerClosed) {
-			runError = fmt.Errorf("operations server: %w", err)
-		}
-	case err := <-workerErrors:
-		if !errors.Is(err, context.Canceled) {
-			runError = fmt.Errorf("publisher worker: %w", err)
-		}
-	}
-	stopWorkers()
-	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	shutdownError := server.Shutdown(shutdownContext)
-	if err := waitForWorkers(shutdownContext, workerGroup); err != nil {
-		for _, broker := range brokers {
-			_ = broker.Close()
-		}
-		return errors.Join(runError, shutdownError, errors.New("publisher workers did not stop before shutdown deadline"))
-	}
-	return errors.Join(runError, shutdownError)
-}
-
-func startWorkers(ctx context.Context, workers []workerRunner) (<-chan error, *sync.WaitGroup) {
-	errorsChannel := make(chan error, len(workers))
-	group := &sync.WaitGroup{}
-	for _, worker := range workers {
-		group.Add(1)
-		go func(worker workerRunner) {
-			defer group.Done()
-			errorsChannel <- worker.Run(ctx)
-		}(worker)
-	}
-	return errorsChannel, group
-}
-
-func waitForWorkers(ctx context.Context, group *sync.WaitGroup) error {
-	done := make(chan struct{})
-	go func() {
-		group.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return (outbox.Runtime{
+		Server: server, Workers: runners, Brokers: readinessBrokers,
+		ShutdownTimeout: 10 * time.Second,
+	}).Run(ctx)
 }
 
 func operationsServer(address string, store outbox.Store, brokers []outbox.Broker, metrics *outbox.Metrics) *http.Server {

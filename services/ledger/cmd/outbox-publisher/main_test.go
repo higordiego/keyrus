@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -87,12 +88,23 @@ func TestWorkerLifecycleJoinsEveryCanceledWorker(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{}, 3)
 	active := &atomic.Int32{}
-	workers := []workerRunner{
+	workers := []outbox.Runner{
 		cancelableWorker{started: started, active: active},
 		cancelableWorker{started: started, active: active},
 		cancelableWorker{started: started, active: active},
 	}
-	errorsChannel, group := startWorkers(ctx, workers)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.NewServeMux()}
+	result := make(chan error, 1)
+	go func() {
+		result <- (outbox.Runtime{
+			Server: server, Listener: listener, Workers: workers,
+			Brokers: []outbox.Broker{readinessBroker{}}, ShutdownTimeout: time.Second,
+		}).Run(ctx)
+	}()
 	for range workers {
 		<-started
 	}
@@ -100,17 +112,10 @@ func TestWorkerLifecycleJoinsEveryCanceledWorker(t *testing.T) {
 		t.Fatalf("not all workers started: active=%d", got)
 	}
 	cancel()
-	deadline, stop := context.WithTimeout(context.Background(), time.Second)
-	defer stop()
-	if err := waitForWorkers(deadline, group); err != nil {
-		t.Fatalf("workers did not join after cancellation: %v", err)
+	if err := <-result; err != nil {
+		t.Fatalf("runtime did not join workers after cancellation: %v", err)
 	}
 	if got := active.Load(); got != 0 {
 		t.Fatalf("worker leaked after join: active=%d", got)
-	}
-	for range workers {
-		if err := <-errorsChannel; !errors.Is(err, context.Canceled) {
-			t.Fatalf("worker returned unexpected shutdown error: %v", err)
-		}
 	}
 }

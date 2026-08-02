@@ -162,7 +162,7 @@ func (t *transaction) InsertOutbox(ctx context.Context, event application.Outbox
 INSERT INTO ledger.outbox_event (
     event_id, aggregate_id, merchant_id, merchant_position, event_type,
     payload, occurred_at, created_at, available_at
-) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $7, $7)`,
+) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $7, clock_timestamp())`,
 		event.EventID.String(), event.EntryID.String(), event.MerchantID.String(),
 		event.Position, event.EventType, event.Payload, event.OccurredAt,
 	)
