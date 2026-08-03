@@ -580,20 +580,20 @@ func (s *publisherScenario) before(ctx context.Context, scenario *godog.Scenario
 
 func (s *publisherScenario) handlers() map[string]func() error {
 	return map[string]func() error{
-		"que o transporte de atualizações está indisponível":            s.transportUnavailable,
-		"que a fonte autoritativa de lançamentos está saudável":         s.ledgerHealthy,
-		"o comerciante registrar um lançamento válido":                  s.recordEntry,
-		"o lançamento deve ser confirmado de forma durável":             s.assertDurable,
-		"sua atualização deve permanecer recuperável":                   s.assertRecoverable,
-		"que o lançamento e seu item de outbox pendente foram confirmados na mesma transação durável": s.atomicOutbox,
+		"que o transporte de atualizações está indisponível":                                                    s.transportUnavailable,
+		"que a fonte autoritativa de lançamentos está saudável":                                                 s.ledgerHealthy,
+		"o comerciante registrar um lançamento válido":                                                          s.recordEntry,
+		"o lançamento deve ser confirmado de forma durável":                                                     s.assertDurable,
+		"sua atualização deve permanecer recuperável":                                                           s.assertRecoverable,
+		"que o lançamento e seu item de outbox pendente foram confirmados na mesma transação durável":           s.atomicOutbox,
 		"que o publicador foi bloqueado depois de enviar a mensagem e antes de receber a confirmação do broker": s.blockBeforeConfirm,
-		"o processo do publicador for interrompido abruptamente":                            s.killPublisher,
-		"todos os identificadores confirmados devem continuar consultáveis na fonte oficial": s.assertSourceIDs,
-		"o item de outbox deve continuar pendente ou elegível para nova publicação":          s.assertPending,
-		"que um lançamento foi confirmado com outbox pendente":                               s.confirmedWithOutbox,
-		"sua atualização for encaminhada ao consolidado":                                      s.forwardUpdate,
-		"a comunicação deve usar evento AMQP persistente via RabbitMQ":                         s.assertPersistentAMQP,
-		"nenhuma chamada gRPC ao consolidado deve participar da confirmação":                   s.assertNoSynchronousConsolidation,
+		"o processo do publicador for interrompido abruptamente":                                                s.killPublisher,
+		"todos os identificadores confirmados devem continuar consultáveis na fonte oficial":                    s.assertSourceIDs,
+		"o item de outbox deve continuar pendente ou elegível para nova publicação":                             s.assertPending,
+		"que um lançamento foi confirmado com outbox pendente":                                                  s.confirmedWithOutbox,
+		"sua atualização for encaminhada ao consolidado":                                                        s.forwardUpdate,
+		"a comunicação deve usar evento AMQP persistente via RabbitMQ":                                          s.assertPersistentAMQP,
+		"nenhuma chamada gRPC ao consolidado deve participar da confirmação":                                    s.assertNoSynchronousConsolidation,
 	}
 }
 
