@@ -94,17 +94,18 @@ func realRuntimeEvidence(t *testing.T) runtimeevidence.Evidence {
 	if inherited, ok := inheritedRuntimeEvidence(t, root); ok {
 		return inherited
 	}
-	key, err := runtimeevidence.NewKey()
+	keyPath, key, cleanup, err := runtimeevidence.WriteKeyFile()
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cleanup()
 	path := filepath.Join(t.TempDir(), "runtime-evidence.json")
 	command := exec.Command("go", "test", "-race", "-count=1", "-timeout", "30m",
 		"-run", "^TestRealEdgeIdentityRuntime$", "./test/integration")
 	command.Dir = root
 	command.Env = append(os.Environ(),
 		runtimeevidence.FileEnvVar+"="+path,
-		runtimeevidence.KeyEnvVar+"="+runtimeevidence.EncodeKey(key),
+		runtimeevidence.KeyFileEnvVar+"="+keyPath,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("execute real runtime for Godog bindings: %v\n%s", err, output)
