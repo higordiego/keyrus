@@ -109,13 +109,10 @@ service LedgerService {
   }
 
   rpc CreateReversal(CreateReversalRequest) returns (CreateReversalResponse) {
-    option (google.api.http) = {
-      post: "/v1/entries/{entry_id}/reversals"
-      body: "*"
-    };
+    option (google.api.http) = {post: "/v1/entries/{entry_id}/reversals"};
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Create an integral reversal"
-      description: "Creates one confirmed compensating entry and marks the original entry as reversed without rewriting its history."
+      description: "Creates one confirmed compensating entry. Reads project the original as reversed without updating its stored record or values."
       parameters: {
         headers: {
           name: "Idempotency-Key"
@@ -165,7 +162,9 @@ enum EntryType {
 
 enum EntryState {
   ENTRY_STATE_UNSPECIFIED = 0;
+  // The entry is durably confirmed and has no confirmed compensation.
   ENTRY_STATE_CONFIRMED = 1;
+  // Read projection for an original entry that has a confirmed compensation.
   ENTRY_STATE_REVERSED = 2;
 }
 
@@ -182,8 +181,11 @@ message LedgerEntry {
   uint64 merchant_position = 8;
   // Set on a compensating entry; the compensation itself is a new CONFIRMED entry.
   string original_entry_id = 9;
-  // Set on an original entry after reversal. The original remains immutable and moves to REVERSED.
+  // Read projection on an original entry when its compensation exists. This is
+  // derived from the compensating entry and is not persisted by updating the original.
   string reversal_entry_id = 10;
+  // Read projection derived from confirmation and any compensating entry. REVERSED
+  // never means that the stored original record or its financial values were updated.
   EntryState state = 11;
 }
 

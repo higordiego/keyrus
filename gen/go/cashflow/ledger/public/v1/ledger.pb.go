@@ -77,8 +77,10 @@ type EntryState int32
 
 const (
 	EntryState_ENTRY_STATE_UNSPECIFIED EntryState = 0
-	EntryState_ENTRY_STATE_CONFIRMED   EntryState = 1
-	EntryState_ENTRY_STATE_REVERSED    EntryState = 2
+	// The entry is durably confirmed and has no confirmed compensation.
+	EntryState_ENTRY_STATE_CONFIRMED EntryState = 1
+	// Read projection for an original entry that has a confirmed compensation.
+	EntryState_ENTRY_STATE_REVERSED EntryState = 2
 )
 
 // Enum value maps for EntryState.
@@ -136,11 +138,14 @@ type LedgerEntry struct {
 	MerchantPosition uint64                 `protobuf:"varint,8,opt,name=merchant_position,json=merchantPosition,proto3" json:"merchant_position,omitempty"`
 	// Set on a compensating entry; the compensation itself is a new CONFIRMED entry.
 	OriginalEntryId string `protobuf:"bytes,9,opt,name=original_entry_id,json=originalEntryId,proto3" json:"original_entry_id,omitempty"`
-	// Set on an original entry after reversal. The original remains immutable and moves to REVERSED.
-	ReversalEntryId string     `protobuf:"bytes,10,opt,name=reversal_entry_id,json=reversalEntryId,proto3" json:"reversal_entry_id,omitempty"`
-	State           EntryState `protobuf:"varint,11,opt,name=state,proto3,enum=cashflow.ledger.public.v1.EntryState" json:"state,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Read projection on an original entry when its compensation exists. This is
+	// derived from the compensating entry and is not persisted by updating the original.
+	ReversalEntryId string `protobuf:"bytes,10,opt,name=reversal_entry_id,json=reversalEntryId,proto3" json:"reversal_entry_id,omitempty"`
+	// Read projection derived from confirmation and any compensating entry. REVERSED
+	// never means that the stored original record or its financial values were updated.
+	State         EntryState `protobuf:"varint,11,opt,name=state,proto3,enum=cashflow.ledger.public.v1.EntryState" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LedgerEntry) Reset() {
@@ -718,7 +723,7 @@ const file_cashflow_ledger_public_v1_ledger_proto_rawDesc = "" +
 	"EntryState\x12\x1b\n" +
 	"\x17ENTRY_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15ENTRY_STATE_CONFIRMED\x10\x01\x12\x18\n" +
-	"\x14ENTRY_STATE_REVERSED\x10\x022\xcf\x12\n" +
+	"\x14ENTRY_STATE_REVERSED\x10\x022\xda\x12\n" +
 	"\rLedgerService\x12\xa0\x05\n" +
 	"\vCreateEntry\x12-.cashflow.ledger.public.v1.CreateEntryRequest\x1a..cashflow.ledger.public.v1.CreateEntryResponse\"\xb1\x04\x92A\x97\x04\x12\x1fCreate a confirmed ledger entry\x1a_Creates a durable credit or debit. The Idempotency-Key is scoped to the authenticated merchant.JU\n" +
 	"\x03201\x12N\n" +
@@ -753,8 +758,8 @@ const file_cashflow_ledger_public_v1_ledger_proto_rawDesc = "" +
 	"\x03401\x12$\n" +
 	"\"Missing or invalid authentication.J9\n" +
 	"\x03403\x122\n" +
-	"0Authenticated identity lacks the required scope.\x82\xd3\xe4\x93\x02\r\x12\v/v1/entries\x12\xc6\x06\n" +
-	"\x0eCreateReversal\x120.cashflow.ledger.public.v1.CreateReversalRequest\x1a1.cashflow.ledger.public.v1.CreateReversalResponse\"\xce\x05\x92A\x9f\x05\x12\x1bCreate an integral reversal\x1apCreates one confirmed compensating entry and marks the original entry as reversed without rewriting its history.Je\n" +
+	"0Authenticated identity lacks the required scope.\x82\xd3\xe4\x93\x02\r\x12\v/v1/entries\x12\xd1\x06\n" +
+	"\x0eCreateReversal\x120.cashflow.ledger.public.v1.CreateReversalRequest\x1a1.cashflow.ledger.public.v1.CreateReversalResponse\"\xd9\x05\x92A\xad\x05\x12\x1bCreate an integral reversal\x1a~Creates one confirmed compensating entry. Reads project the original as reversed without updating its stored record or values.Je\n" +
 	"\x03201\x12^\n" +
 	"%Compensating entry confirmed durably.\x125\n" +
 	"3\x1a1.cashflow.ledger.public.v1.CreateReversalResponseJ6\n" +
@@ -769,7 +774,7 @@ const file_cashflow_ledger_public_v1_ledger_proto_rawDesc = "" +
 	"\x03409\x12B\n" +
 	"@Idempotency conflict or the original entry was already reversed.rL\n" +
 	"J\n" +
-	"\x0fIdempotency-Key\x123Required idempotency key for this reversal command.\x18\x01(\x01\x82\xd3\xe4\x93\x02%:\x01*\" /v1/entries/{entry_id}/reversalsBJZHgithub.com/higordiegoti/keyrus/gen/go/cashflow/ledger/public/v1;ledgerv1b\x06proto3"
+	"\x0fIdempotency-Key\x123Required idempotency key for this reversal command.\x18\x01(\x01\x82\xd3\xe4\x93\x02\"\" /v1/entries/{entry_id}/reversalsBJZHgithub.com/higordiegoti/keyrus/gen/go/cashflow/ledger/public/v1;ledgerv1b\x06proto3"
 
 var (
 	file_cashflow_ledger_public_v1_ledger_proto_rawDescOnce sync.Once

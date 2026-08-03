@@ -1,0 +1,14 @@
+title = "Keyrus cash-flow secret detection policy"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "devsecops-fixture-token"
+description = "Controlled token pattern used only to prove the blocking gate"
+regex = '''SECURITY_TEST_TOKEN_[A-Z0-9]{32}'''
+keywords = ["SECURITY_TEST_TOKEN_"]
+
+[[allowlists]]
+description = "Generated local tools and evidence are outside the versioned source boundary"
+paths = ['''(^|/)\.tools/''', '''(^|/)evidence/reports/''']

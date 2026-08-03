@@ -4,7 +4,7 @@ package bddrunner
 import (
 	"context"
 	"fmt"
-	"io"
+	"os"
 	"strings"
 	"sync"
 
@@ -19,6 +19,7 @@ type Config struct {
 	FeatureContents []godog.Feature
 	Tags            []string
 	Initialize      func(*godog.ScenarioContext)
+	Randomize       int64
 }
 
 // Run fails on zero selected scenarios and on failed, undefined, pending,
@@ -70,7 +71,8 @@ func Run(config Config) error {
 			Tags:            tagExpression,
 			Paths:           config.Paths,
 			FeatureContents: config.FeatureContents,
-			Output:          io.Discard,
+			Randomize:       config.Randomize,
+			Output:          os.Stdout,
 		},
 	}.Run()
 
