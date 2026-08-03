@@ -16,11 +16,16 @@ import (
 	"syscall"
 	"time"
 
+	ledgerv1 "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/public/v1"
 	"github.com/higordiegoti/keyrus/internal/platform/auth"
 	"github.com/higordiegoti/keyrus/internal/platform/grpcsecurity"
 	"github.com/higordiegoti/keyrus/internal/platform/identityruntime"
 	"github.com/higordiegoti/keyrus/internal/platform/observability/redact"
 	"github.com/higordiegoti/keyrus/internal/platform/runtimeobs"
+	inboundgrpc "github.com/higordiegoti/keyrus/services/ledger/internal/adapters/inbound/grpc"
+	"github.com/higordiegoti/keyrus/services/ledger/internal/adapters/outbound/postgres"
+	"github.com/higordiegoti/keyrus/services/ledger/internal/application"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -48,9 +53,36 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	owners, err := identityruntime.ParseOwners(os.Getenv("CASHFLOW_IDENTITY_FIXTURE_OWNERS"))
-	if err != nil {
-		return err
+	var inboundServer ledgerv1.LedgerServiceServer
+	if fixture := os.Getenv("CASHFLOW_IDENTITY_FIXTURE_OWNERS"); fixture != "" {
+		owners, err := identityruntime.ParseOwners(fixture)
+		if err != nil {
+			return err
+		}
+		inboundServer = identityruntime.NewMockLedgerServer(owners)
+	} else {
+		pool, err := pgxpool.New(context.Background(), required("CASHFLOW_DB_URL"))
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		store, err := postgres.New(pool)
+		if err != nil {
+			return err
+		}
+		cursorCodec, err := application.NewCursorCodec([]byte(required("CASHFLOW_CURSOR_SECRET")))
+		if err != nil {
+			return err
+		}
+		app, err := application.NewService(application.Dependencies{
+			UnitOfWork: store,
+			Reader:     store,
+			Cursors:    cursorCodec,
+		})
+		if err != nil {
+			return err
+		}
+		inboundServer = inboundgrpc.NewServer(app)
 	}
 	delegations, err := identityruntime.ParseAssignments(required("CASHFLOW_SERVICE_TENANT_DELEGATIONS"))
 	if err != nil {
@@ -67,10 +99,11 @@ func run(logger *slog.Logger) error {
 
 	metrics := &runtimeobs.Metrics{}
 	httpHandler, err := identityruntime.NewLedgerHTTPHandler(identityruntime.LedgerHTTPConfig{
-		Verifier: publicVerifier,
-		Owners:   owners,
-		Logger:   logger,
-		Metrics:  metrics,
+		Verifier:     publicVerifier,
+		Server:       inboundServer,
+		Logger:       logger,
+		Metrics:      metrics,
+		MaxBodyBytes: 1048576,
 	})
 	if err != nil {
 		return err
