@@ -15,7 +15,8 @@ Funcionalidade: Estornar um lançamento confirmado
     Então deve ser criada uma movimentação de valor igual e tipo oposto
     E a compensação deve usar a data corrente do comerciante
     E deve referenciar o lançamento original
-    E o lançamento original deve permanecer inalterado
+    E o registro e os valores armazenados do lançamento original devem permanecer inalterados
+    E ao consultar o original, o estado "REVERSED" e a referência da compensação devem ser derivados da compensação confirmada
 
   @SCN-RF03-002
   Cenário: Estornar lançamento ainda não consolidado
@@ -65,4 +66,3 @@ Funcionalidade: Estornar um lançamento confirmado
       | segundo estorno do mesmo lançamento |
       | estorno de outro estorno         |
       | lançamento de outro comerciante  |
-

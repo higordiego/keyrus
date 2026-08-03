@@ -1,0 +1,40 @@
+name: full-validation
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-all:
+    name: validate-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: Run all materialized gates
+        run: make full-validation
+      - name: Rebuild CI evidence
+        if: always()
+        run: make reports
+      - name: Publish all evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: full-validation-evidence-${{ github.sha }}
+          path: evidence/reports/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------
+  # INFRASTRUCTURE
+  # ---------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: cashflow
+      POSTGRES_PASSWORD: ${CASHFLOW_DB_PASSWORD:-secret}
+      POSTGRES_DB: cashflow
+    ports:
+      - "5432:5432"
+    networks:
+      - cashflow-net
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: cashflow
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-secret}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - cashflow-net
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.0
+    command: start --optimized --import-realm --http-enabled=false --https-port=8443 --https-certificate-file=/etc/cashflow/keycloak.crt --https-certificate-key-file=/etc/cashflow/keycloak.key
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_DATABASE: cashflow
+      KC_DB_USERNAME: cashflow
+      KC_DB_PASSWORD: ${CASHFLOW_DB_PASSWORD:-secret}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+    ports:
+      - "8443:8443"
+    networks:
+      - cashflow-net
+    volumes:
+      - ./deploy/keycloak/realm-cashflow.json:/opt/keycloak/data/import/realm-cashflow.json:ro
+      - ./secrets/certs:/etc/cashflow:ro
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.135.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    networks:
+      - cashflow-net
+    volumes:
+      - ./testdata/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+
+  # ---------------------------------------------------------
+  # MICROSERVICES
+  # ---------------------------------------------------------
+  ledger-api:
+    build:
+      context: .
+      dockerfile: deploy/identity/ledger-api.Containerfile
+    image: cashflow-ledger-api:latest
+    environment:
+      CASHFLOW_DB_URL: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CASHFLOW_OIDC_ISSUER: https://keycloak:8443/realms/cashflow
+      CASHFLOW_OIDC_JWKS_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/certs
+      CASHFLOW_OIDC_CA_FILE: /etc/cashflow/ca.pem
+      CASHFLOW_GRPC_TLS_CERT_FILE: /etc/cashflow/ledger.crt
+      CASHFLOW_GRPC_TLS_KEY_FILE: /etc/cashflow/ledger.key
+      CASHFLOW_GRPC_CLIENT_CA_FILE: /etc/cashflow/ca.pem
+      CASHFLOW_SERVICE_TENANT_DELEGATIONS: "cashflow-consolidation-svc=merchant-a"
+      CASHFLOW_CURSOR_SECRET: "my-secret-cursor-key"
+      CASHFLOW_OTLP_ENDPOINT: otel-collector:4317
+    networks:
+      - cashflow-net
+    volumes:
+      - ./secrets/certs:/etc/cashflow:ro
+    depends_on:
+      - postgres
+      - keycloak
+
+  consolidation-api:
+    build:
+      context: .
+      dockerfile: deploy/identity/consolidation-api.Containerfile
+    image: cashflow-consolidation-api:latest
+    environment:
+      CASHFLOW_DB_URL: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CASHFLOW_OIDC_ISSUER: https://keycloak:8443/realms/cashflow
+      CASHFLOW_OIDC_JWKS_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/certs
+      CASHFLOW_OIDC_TOKEN_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/token
+      CASHFLOW_OIDC_CA_FILE: /etc/cashflow/ca.pem
+      CASHFLOW_SERVICE_CLIENT_SECRET_FILE: /run/secrets/consolidation-client-secret
+      CASHFLOW_LEDGER_GRPC_TARGET: ledger-api:9081
+      CASHFLOW_GRPC_TLS_CERT_FILE: /etc/cashflow/consolidation.crt
+      CASHFLOW_GRPC_TLS_KEY_FILE: /etc/cashflow/consolidation.key
+      CASHFLOW_GRPC_CA_FILE: /etc/cashflow/ca.pem
+      CASHFLOW_GRPC_SERVER_NAME: ledger-api
+      CASHFLOW_OTLP_ENDPOINT: otel-collector:4317
+    networks:
+      - cashflow-net
+    volumes:
+      - ./secrets/certs:/etc/cashflow:ro
+      - ./secrets/consolidation-client-secret:/run/secrets/consolidation-client-secret:ro
+    depends_on:
+      - postgres
+      - keycloak
+      - ledger-api
+
+  # ---------------------------------------------------------
+  # EDGE GATEWAY
+  # ---------------------------------------------------------
+  krakend:
+    build:
+      context: .
+      dockerfile: deploy/edge/krakend.Containerfile
+    image: cashflow-krakend:latest
+    command: ["run", "-c", "/etc/krakend/krakend.json"]
+    environment:
+      SSL_CERT_FILE: /etc/cashflow/ca.pem
+    ports:
+      - "8080:8080"
+    networks:
+      - cashflow-net
+    volumes:
+      - ./secrets/certs/ca.pem:/etc/cashflow/ca.pem:ro
+    depends_on:
+      - ledger-api
+      - consolidation-api
+
+networks:
+  cashflow-net:
+    driver: overlay
+
+volumes:
+  postgres-data:
+  rabbitmq-data:

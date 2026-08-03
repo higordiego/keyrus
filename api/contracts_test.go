@@ -103,6 +103,27 @@ func TestCommandOpenAPIRequiresIdempotencyAndDocumentsStatuses(t *testing.T) {
 	}
 }
 
+func TestReversalOpenAPIHasNoRequestBody(t *testing.T) {
+	document := loadOpenAPI(t)
+	reversal := document.Paths["/v1/entries/{entryId}/reversals"]["post"]
+	for _, parameter := range reversal.Parameters {
+		if parameter.In == "body" {
+			t.Fatalf("reversal request must be path and headers only, got body parameter %#v", parameter)
+		}
+	}
+
+	create := document.Paths["/v1/entries"]["post"]
+	foundCreateBody := false
+	for _, parameter := range create.Parameters {
+		if parameter.In == "body" {
+			foundCreateBody = true
+		}
+	}
+	if !foundCreateBody {
+		t.Fatal("entry creation still requires its financial request body")
+	}
+}
+
 func TestDailyBalanceOpenAPIUsesNullableDataEnvelope(t *testing.T) {
 	document := loadOpenAPI(t)
 	envelope := document.Definitions["v1DailyBalance"]
@@ -187,7 +208,7 @@ func TestDailyBalanceSerializesNullAndPresentDataWithoutLosingEnvelope(t *testin
 	}
 }
 
-func TestLedgerEntryStateAndReversalReferencesAreExplicit(t *testing.T) {
+func TestLedgerEntryReadProjectionExposesStateAndReversalReferences(t *testing.T) {
 	wantEnum := map[string]int32{
 		"ENTRY_STATE_UNSPECIFIED": 0,
 		"ENTRY_STATE_CONFIRMED":   1,
@@ -213,6 +234,8 @@ func TestLedgerEntryStateAndReversalReferencesAreExplicit(t *testing.T) {
 		t.Fatalf("EntryState OpenAPI enum: got %v, want %v", enumValues, wantValues)
 	}
 
+	// This verifies the read contract only. Runtime tickets must derive this view
+	// from the compensating entry without updating the stored original record.
 	original := &ledgerv1.LedgerEntry{EntryId: "original", State: ledgerv1.EntryState_ENTRY_STATE_REVERSED, ReversalEntryId: "compensation"}
 	compensation := &ledgerv1.LedgerEntry{EntryId: "compensation", State: ledgerv1.EntryState_ENTRY_STATE_CONFIRMED, OriginalEntryId: "original"}
 	for _, message := range []*ledgerv1.LedgerEntry{original, compensation} {

@@ -1,0 +1,13 @@
+name: controlled-unpinned-action-fixture
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: controlled-fixture
+  cancel-in-progress: true
+jobs:
+  reject-me:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@v4
