@@ -1,6 +1,10 @@
 # One @SCN-* tag per line. Only tags in this manifest are executed by Godog.
 # Only scenarios backed by real component bindings and PostgreSQL are listed.
 # Adding a tag without a real binding makes the strict Godog suite fail.
+#
+# T02 runtime evidence: Keycloak, KrakenD, the final Ledger/Consolidation images
+# and the OpenTelemetry Collector. Standalone Godog execution starts the E2E;
+# the CI gate shares only its fresh machine-readable evidence.
 @SCN-RF04-001
 @SCN-RF04-002
 @SCN-RF04-003
@@ -13,6 +17,16 @@
 @SCN-RF04A-004
 @SCN-RNF01-002
 @SCN-RNF01-004
+@SCN-RNF06-001
+@SCN-RNF06-002
+@SCN-RNF06-003
 @SCN-RNF06-005
 @SCN-RNF06-006
+@SCN-RNF08-002
+@SCN-RNF08-003
+@SCN-RNF08-004
+@SCN-RNF08-005
+@SCN-RNF08-008
+@SCN-RNF08-009
+@SCN-RNF09-004
 @SCN-RNF09-006

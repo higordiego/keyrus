@@ -4,7 +4,7 @@ package bddrunner
 import (
 	"context"
 	"fmt"
-	"io"
+	"os"
 	"strings"
 	"sync"
 
@@ -72,7 +72,7 @@ func Run(config Config) error {
 			Paths:           config.Paths,
 			FeatureContents: config.FeatureContents,
 			Randomize:       config.Randomize,
-			Output:          io.Discard,
+			Output:          os.Stdout,
 		},
 	}.Run()
 

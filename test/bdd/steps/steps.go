@@ -4,12 +4,22 @@
 // share a single godog catch-all step registration and dispatch internally
 // by exact step text, because godog's strict mode rejects any step text that
 // matches more than one registered pattern.
+// Package steps is the single registration point for implemented business
+// bindings.
+//
+// T02 implements the edge, identity and security scenarios only. Every binding
+// below drives real code: a real RSA signed credential through the production
+// verifier, the versioned KrakenD configuration through the edge policy
+// executor, and the private gRPC surface over real mutual TLS. Scenarios that
+// are not listed in features/implemented_scenarios.txt are approved
+// specifications, not passing tests.
 package steps
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/higordiegoti/keyrus/test/support/runtimeevidence"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,8 +36,6 @@ import (
 
 const (
 	merchantMain = "10000000-0000-4000-8000-000000000001"
-	merchantA    = "a0000000-0000-4000-8000-00000000000a"
-	merchantB    = "b0000000-0000-4000-8000-00000000000b"
 )
 
 var (
@@ -55,18 +63,206 @@ type scenarioState struct {
 // its ambiguous-step check, then dispatches by exact text: the publisher
 // fixture first (a small, fixed set of literal steps), falling through to
 // the consolidation fixture's own literal/parameterized matching.
-func Initialize(ctx *godog.ScenarioContext) {
-	state := &scenarioState{}
-	publisher := &publisherScenario{}
-	ctx.Before(state.beforeScenario)
-	ctx.Before(publisher.before)
-	ctx.After(state.afterScenario)
-	ctx.Step(`^(.+)$`, func(text string) error {
-		if handled, err := publisher.tryHandle(text); handled {
-			return err
+func Initialize(evidence runtimeevidence.Evidence) func(*godog.ScenarioContext) {
+	return func(ctx *godog.ScenarioContext) {
+		// T02 Init
+		w := newWorld(evidence)
+		ctx.Before(func(c context.Context, current *godog.Scenario) (context.Context, error) {
+			return c, w.prepare(current)
+		})
+		ctx.After(func(c context.Context, _ *godog.Scenario, err error) (context.Context, error) {
+			w.release()
+			return c, err
+		})
+		registerTenantIsolation(ctx, w)
+		registerPublicEdge(ctx, w)
+		registerPrivateSurface(ctx, w)
+
+		// HEAD Init
+		state := &scenarioState{}
+		publisher := &publisherScenario{}
+		ctx.Before(state.beforeScenario)
+		ctx.Before(publisher.before)
+		ctx.After(state.afterScenario)
+
+		// Explicit legacy step registrations to avoid catch-all ambiguity
+		legacySteps := []string{
+			"que existe um lançamento confirmado e ainda não aplicado",
+			"2026-07-30",
+			"que o lançamento já produziu seu efeito no consolidado",
+			"2026-07-30",
+			"2026-07-30",
+			"que a posição 1 do comerciante foi aplicada",
+			"que a fonte do comerciante declarou a posição 3",
+			"2026-07-31",
+			"que as posições 1 e 3 do comerciante já foram aplicadas",
+			"que as posições 1, 2 e 3 do comerciante já foram aplicadas",
+			"que as posições 1, 2 e 3 já foram aplicadas",
+			"que existe um lançamento confirmado para uma data dentro dos últimos 30 dias",
+			"credit",
+			"2026-07-31",
+			"",
+			"debit",
+			"2026-07-30",
+			"",
+			"2026-07-30",
+			"2026-07-31",
+			"que existe uma compensação confirmada",
+			"credit",
+			"2026-07-31",
+			"",
+			"debit",
+			"2026-08-01",
+			"2026-08-01",
+			"2026-07-31",
+			"que o saldo de abertura do comerciante é R$ 0,00",
+			"que a posição 1 é um crédito de R$ 100,00 em \"2026-07-30\"",
+			"que a posição 2 é um débito de R$ 30,00 em \"2026-07-30\"",
+			"que a posição 3 é um crédito de R$ 10,00 em \"2026-07-31\"",
+			"standard event fixture is incomplete",
+			"que as posições 1 a 4 do comerciante já foram aplicadas",
+			"que não existe outra movimentação em \"2026-08-01\"",
+			"2026-08-01",
+			"unexpected movement on 2026-08-01: %+v",
+			"que o fuso do comerciante é \"America/Fortaleza\"",
+			"2026-08-01",
+			"que o relógio está fixado em \"2026-08-01T12:00:00-03:00\"",
+			"2026-08-01",
+			"merchant calendar was not configured",
+			"que o saldo acumulado em \"2026-07-31\" é R$ 60,00",
+			"2026-07-31",
+			"saldo acumulado",
+			"que o dia \"2026-07-30\" possui créditos de R$ 100,00, débitos de R$ 30,00, quantidade 2 e saldo acumulado de R$ 70,00",
+			"2026-07-30",
+			"que o dia \"2026-07-31\" possui créditos de R$ 10,00, débitos de R$ 0,00, quantidade 1 e saldo acumulado de R$ 80,00",
+			"2026-07-31",
+			"ele for processado pelo consolidado",
+			"ele for aplicado",
+			"ela for processada",
+			"a mesma atualização for entregue novamente",
+			"a posição 3 for entregue novamente",
+			"2026-07-30",
+			"2026-07-31",
+			"a posição 3 chegar antes da posição 2",
+			"a posição 2 do comerciante for entregue e aplicada",
+			"as posições 1, 2 e 3 forem aplicadas",
+			"a posição 4 do comerciante, um débito retroativo de R$ 20,00 em \"2026-07-30\", for aplicada",
+			"2026-07-30",
+			"a posição 5 estornar integralmente o crédito da posição 3",
+			"2026-07-31",
+			"os totais do comerciante e da data de negócio devem ser atualizados",
+			"daily totals were not updated: %+v",
+			"o lançamento deve produzir exatamente um efeito financeiro",
+			"financial effect count = %d, want 1",
+			"os totais e o saldo devem permanecer inalterados",
+			"os valores, quantidades e saldos dos dois dias devem permanecer inalterados",
+			"nenhuma atualização deve ser perdida",
+			"2026-07-31",
+			"out-of-order event was lost",
+			"os totais dessa data devem ser corrigidos",
+			"retroactive totals were not corrected: %+v",
+			"os saldos acumulados posteriores devem ser recompostos",
+			"2026-07-31",
+			"2026-07-31",
+			"later closing was not recomputed: before=%+v after=%+v",
+			"o intervalo afetado deve permanecer não definitivo até o fim da recomposição",
+			"bounded retroactive recompute did not complete",
+			"deve afetar os totais da data do estorno",
+			"2026-08-01",
+			"créditos",
+			"2026-08-01",
+			"débitos",
+			"2026-08-01",
+			"quantidade",
+			"não deve reescrever os totais da data do lançamento original",
+			"os totais históricos de \"2026-07-31\" devem permanecer inalterados",
+			"2026-07-31",
+			"que A possui um crédito confirmado de R$ 100,00",
+			"A",
+			"credit",
+			"2026-07-31",
+			"",
+			"que B possui um débito confirmado de R$ 30,00",
+			"B",
+			"debit",
+			"2026-07-31",
+			"",
+			"que ambos os lançamentos usaram a mesma chave de idempotência em seus respectivos escopos",
+			"tenant fixtures are incomplete",
+			"as duas atualizações forem aplicadas pelo consolidado",
+			"A",
+			"B",
+			"as posições de A e B devem avançar independentemente",
+			"o saldo de A deve ser R$ 100,00",
+			"o saldo de B deve ser R$ -30,00",
+			"que A e B possuem saldos atualizados para as mesmas datas",
+			"credit",
+			"2026-07-31",
+			"",
+			"credit",
+			"2026-07-31",
+			"",
+			"2026-07-31",
+			"que uma atualização retroativa de A está isolada em DLQ",
+			"debit",
+			"2026-07-30",
+			"",
+			"2026-07-30",
+			"os estados dos dois comerciantes forem consultados",
+			"os dias afetados de A devem ficar atrasados",
+			"merchant A has no durable DLQ pending state",
+			"lançamentos, posições, estado e saldo de B devem permanecer inalterados e atualizados",
+			"2026-07-31",
+			"merchant B changed with A failure: balance=%+v progress=%+v",
+			`"source_position" deve ser 3`,
+			`"applied_position" contígua deve permanecer 1`,
+			`que "applied_position" contígua do comerciante é 1`,
+			`que "source_position" do comerciante é 3`,
+			`"applied_position" deve avançar para 3`,
+			`"source_position" e "applied_position" devem ser 3`,
+			`"source_position" e "applied_position" do comerciante devem permanecer 3`,
+			`"source_position" e "applied_position" devem ser 4`,
+			`"source_position" e "applied_position" do comerciante devem ser 5`,
+			"o consolidado deve permanecer não definitivo",
+			"o consolidado deve tornar-se atualizado e definitivo",
+			"que o transporte de atualizações está indisponível",
+			"que a fonte autoritativa de lançamentos está saudável",
+			"o comerciante registrar um lançamento válido",
+			"o lançamento deve ser confirmado de forma durável",
+			"sua atualização deve permanecer recuperável",
+			"que o lançamento e seu item de outbox pendente foram confirmados na mesma transação durável",
+			"que o publicador foi bloqueado depois de enviar a mensagem e antes de receber a confirmação do broker",
+			"o processo do publicador for interrompido abruptamente",
+			"todos os identificadores confirmados devem continuar consultáveis na fonte oficial",
+			"o item de outbox deve continuar pendente ou elegível para nova publicação",
+			"que um lançamento foi confirmado com outbox pendente",
+			"sua atualização for encaminhada ao consolidado",
+			"a comunicação deve usar evento AMQP persistente via RabbitMQ",
+			"nenhuma chamada gRPC ao consolidado deve participar da confirmação",
 		}
-		return state.execute(text)
-	})
+		for _, step := range legacySteps {
+			s := step
+			ctx.Step("^"+regexp.QuoteMeta(s)+"$", func() error {
+				if handled, err := publisher.tryHandle(s); handled {
+					return err
+				}
+				return state.execute(s)
+			})
+		}
+
+		ctx.Step(`^o dia "([^"]+)" deve possuir créditos de R\$ ([0-9.,-]+)$`, func(d, a string) error {
+			return state.execute(fmt.Sprintf("o dia \"%s\" deve possuir créditos de R$ %s", d, a))
+		})
+		ctx.Step(`^o dia "([^"]+)" deve continuar com líquido de R\$ ([0-9.,-]+)$`, func(d, a string) error {
+			return state.execute(fmt.Sprintf("o dia \"%s\" deve continuar com líquido de R$ %s", d, a))
+		})
+		ctx.Step(`^(?:deve possuir )?(débitos|líquido|saldo acumulado) de R\$ ([0-9.,-]+)$`, func(f, a string) error {
+			return state.execute(fmt.Sprintf("%s de R$ %s", f, a))
+		})
+		ctx.Step(`^quantidade igual a ([0-9]+)$`, func(c int) error {
+			return state.execute(fmt.Sprintf("quantidade igual a %d", c))
+		})
+	}
 }
 
 func (state *scenarioState) beforeScenario(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
@@ -669,4 +865,65 @@ func (s *publisherScenario) assertEvidence() error {
 		return fmt.Errorf("real PostgreSQL/RabbitMQ fixture for %s failed: %w\n%s", s.tag, s.err, s.output)
 	}
 	return nil
+}
+
+func registerTenantIsolation(scenario *godog.ScenarioContext, w *world) {
+	scenario.Step(`^que o token é válido e contém o comerciante e o escopo exigido$`, w.givenValidIdentityEvidence)
+	scenario.Step(`^uma operação autorizada for solicitada$`, w.whenAuthorizedOperationEvidence)
+	scenario.Step(`^o comerciante deve ser derivado da identidade autenticada$`, w.thenMerchantDerivedEvidence)
+	scenario.Step(`^a operação deve permanecer limitada a esse comerciante$`, w.thenTenantLimitedEvidence)
+
+	scenario.Step(`^que o token está "([^"]*)"$`, w.givenTokenConditionEvidence)
+	scenario.Step(`^uma operação protegida for solicitada$`, w.whenProtectedOperationEvidence)
+	scenario.Step(`^a solicitação deve ser rejeitada$`, w.thenOperationRejectedEvidence)
+	scenario.Step(`^nenhum dado financeiro deve ser alterado ou revelado$`, w.thenNoEffectOrDisclosureEvidence)
+
+	scenario.Step(`^que o recurso pertence a outro comerciante$`, w.givenForeignResourceEvidence)
+	scenario.Step(`^a identidade autenticada tentar acessá-lo$`, w.whenHorizontalAccessEvidence)
+	scenario.Step(`^a operação deve ser negada$`, w.thenHorizontalDeniedEvidence)
+	scenario.Step(`^a resposta não deve revelar se o recurso existe$`, w.thenExistenceHiddenEvidence)
+	scenario.Step(`^código e corpo devem seguir o mesmo contrato de um identificador inexistente$`, w.thenContractEqualEvidence)
+	scenario.Step(`^a análise estatística de tempo não deve permitir enumeração prática de recursos$`, w.thenTimingSafeEvidence)
+}
+
+// registerPublicEdge covers @SCN-RNF08-002 through @SCN-RNF08-005 and
+// @SCN-RNF08-008.
+func registerPublicEdge(scenario *godog.ScenarioContext, w *world) {
+	scenario.Step(`^que o JWT está "([^"]*)"$`, w.givenJWTConditionEvidence)
+	scenario.Step(`^uma rota pública protegida for chamada pelo KrakenD$`, w.whenPublicEdgeCalledEvidence)
+	scenario.Step(`^a borda deve rejeitar a solicitação sem encaminhá-la ao serviço$`, w.thenEdgeRejectedWithoutForwardEvidence)
+
+	scenario.Step(`^que uma chamada alcançou diretamente a rede privada da Ledger API$`, w.givenDirectPrivateCallEvidence)
+	scenario.Step(`^que seu JWT não é válido para a operação$`, w.givenInvalidOperationJWTEvidence)
+	scenario.Step(`^o serviço validar identidade, escopo e comerciante$`, w.whenServiceValidatesEvidence)
+	scenario.Step(`^a operação deve ser rejeitada$`, w.thenOperationRejectedEvidence)
+	scenario.Step(`^nenhum lançamento deve ser confirmado$`, w.thenNoCommitEvidence)
+
+	scenario.Step(`^que uma requisição pública válida contém "Authorization", "Idempotency-Key", "traceparent" e "tracestate"$`, w.givenFourHeadersEvidence)
+	scenario.Step(`^o KrakenD encaminhá-la ao serviço responsável$`, w.whenEdgeForwardedEvidence)
+	scenario.Step(`^o serviço deve receber os quatro cabeçalhos sem alteração semântica$`, w.thenFourHeadersPreservedEvidence)
+
+	scenario.Step(`^que a Ledger API confirmou o lançamento mas interrompeu a resposta$`, w.givenCommitThenEOFEvidence)
+	scenario.Step(`^o KrakenD observar a falha do backend$`, w.whenEdgeObservedFailureEvidence)
+	scenario.Step(`^o gateway não deve realizar uma segunda invocação do comando POST$`, w.thenSingleGatewayInvocationEvidence)
+	scenario.Step(`^uma repetição feita pelo cliente deve depender da mesma "Idempotency-Key"$`, w.thenIdempotentClientReplayEvidence)
+
+	scenario.Step(`^que o Keycloak está acessível internamente pela rede do Swarm$`, w.givenKeycloakInternalEvidence)
+	scenario.Step(`^um cliente externo consultar administração, health ou métricas pela borda pública$`, w.whenExternalProbeEvidence)
+	scenario.Step(`^o KrakenD deve rejeitar ou não possuir rota para esses caminhos$`, w.thenPrivatePathsAbsentEvidence)
+	scenario.Step(`^somente os caminhos públicos necessários ao protocolo OIDC devem estar expostos$`, w.thenPublicOIDCOnlyEvidence)
+}
+
+// registerPrivateSurface covers @SCN-RNF08-009 and @SCN-RNF09-004.
+func registerPrivateSurface(scenario *godog.ScenarioContext, w *world) {
+	scenario.Step(`^que o RPC de watermark da Ledger pertence somente à rede interna gRPC$`, w.givenWatermarkInternalEvidence)
+	scenario.Step(`^uma chamada sem identidade de serviço válida tentar consultá-lo$`, w.whenMissingServiceIdentityEvidence)
+	scenario.Step(`^a Ledger API deve rejeitar a chamada$`, w.thenLedgerRejectedEvidence)
+	scenario.Step(`^o KrakenD não deve possuir rota pública para esse RPC$`, w.thenNoPublicRouteEvidence)
+
+	scenario.Step(`^que uma chamada interna possui trace context e deadline$`, w.givenContextAndDeadlineEvidence)
+	scenario.Step(`^atravessar um cliente e servidor gRPC$`, w.whenCrossedGRPCEvidence)
+	scenario.Step(`^"traceparent" deve permanecer correlacionável em metadata$`, w.thenTraceparentCorrelatedEvidence)
+	scenario.Step(`^cancelamento, deadline e limite de tamanho devem ser respeitados$`, w.thenLimitsEnforcedEvidence)
+	scenario.Step(`^JWT, valores e descrições não devem aparecer em traces ou logs$`, w.thenTelemetryRedactedEvidence)
 }

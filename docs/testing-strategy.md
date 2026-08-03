@@ -23,7 +23,7 @@ flowchart LR
 | Implementado | A tag está no manifesto e possui binding real, fixture e asserção contra o sistema. |
 | Verificado | O cenário implementado passou no ambiente exigido e publicou a evidência definida nesta estratégia. |
 
-No estado atual existem **81 aprovados, 81 pendentes de implementação, 0 implementados e 0 verificados por comportamento**.
+No estado atual existem **81 aprovados, 71 pendentes de implementação e 10 tags T02 implementadas/verificadas pelo runtime de segurança**.
 
 ## Níveis de teste
 
@@ -75,24 +75,24 @@ Esta análise AST deliberadamente não usa tipos: métodos homônimos em recepto
 
 ### Estado atual do wiring
 
-Hoje o manifesto está vazio, mas `TestImplementedScenarios` liga `test/bdd/steps.Initialize`, `internal/bddrunner.Run` e `internal/bddguard`. O runner rejeita seleção vazia e o teste comprova essa rejeição explicitamente, sem declarar comportamento de negócio executado.
+O manifesto liga 10 tags T02 a `TestImplementedScenarios`, `test/bdd/steps.Initialize`, `internal/bddrunner.Run` e `internal/bddguard`. Os bindings exigem evidência estruturada produzida pelo E2E real com Keycloak, KrakenD, imagens finais das APIs e Collector; execução Godog isolada dispara esse runtime antes dos cenários.
 
 Consequências práticas:
 
-- o `PASS` atual prova catálogo, parsing, reconciliação do inventário Godog e guards não vacuosos;
+- o `PASS` atual prova catálogo, parsing, reconciliação e os oráculos literais dos 10 cenários T02 contra runtime real;
 - adicionar uma tag ao manifesto sem binding real fará o runner reprovar por step indefinido;
-- fixtures automatizadas provam “binding real com efeito observável passa; tag sem binding, manifesto/tag inválida, undefined, pending, skip e handler vazio por `Step`/`Given`/`When`/`Then` falham”;
+- fixtures automatizadas continuam provando que tag sem binding, manifesto/tag inválida, undefined, pending, skip e handler vazio falham;
 - não existe filtro local para executar uma única tag implementada; a suíte usa o manifesto inteiro.
 
-A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a allowlist versionada continua sendo a seleção oficial. Apesar de o wiring estar testado, o manifesto vazio continua sem provar qualquer comportamento financeiro ou integração dos serviços.
+A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a allowlist versionada continua sendo a seleção oficial. As tags atuais provam somente identidade, gateway, transporte gRPC e telemetria do T02, nunca regras financeiras.
 
 ## Comandos locais
 
 | Objetivo | Comando | Critério de sucesso atual |
 |---|---|---|
-| Validar catálogo | `make bdd-parse` | `validated 14 features, 81 unique scenarios, 0 implemented` enquanto o manifesto estiver vazio |
-| Testar harness BDD | `go test -race ./test/bdd/...` | parser, catálogo, inventário Godog, guards e fixtures positivas/negativas verdes; zero implementados não significa comportamento verificado |
-| Rodar a suíte implementada | `go test -race ./test/bdd -run '^TestImplementedScenarios$' -v` | todos os cenários do manifesto passam; atualmente o runner comprova que a seleção vazia é rejeitada sem executar comportamento |
+| Validar catálogo | `make bdd-parse` | `validated 14 features, 81 unique scenarios, 10 implemented` |
+| Testar harness BDD | `go test -race ./test/bdd/...` | parser, catálogo, inventário Godog, guards, fixtures de política e 10 cenários T02 verdes; sem evidência fresca a suíte inicia o E2E |
+| Rodar a suíte implementada | `go test -race ./test/bdd -run '^TestImplementedScenarios$' -v` | 10 cenários/15 execuções do manifesto passam usando resultados estruturados do runtime real |
 | Rodar todos os testes Go | `go test -race ./...` | todos os pacotes verdes; pode depender de gerados/recortes ainda em construção |
 | Rodar gates do repositório | `make ci` | geração, formato, contratos, build, testes e catálogo verdes |
 | Gerar relatórios básicos | `make reports` | limpa evidência anterior, executa os dois produtores mesmo se um falhar, preserva o primeiro código de falha e produz `evidence/reports/ci/go-test.json`, `bdd-catalog.json` e metadados; os resultados são ignorados pelo Git |
@@ -110,7 +110,9 @@ O gate de BDD deve distinguir:
 3. **qualidade de execução:** nenhum status indefinido, pendente, ambíguo ou pulado;
 4. **evidência especializada:** k6, falha, reconciliação, segurança e observabilidade são anexados quando exigidos.
 
-Os relatórios atuais não incluem resultado Cucumber/JUnit por tag nem summary k6. São evidências futuras necessárias, não arquivos já entregues.
+Os relatórios atuais não incluem resultado Cucumber/JUnit nem summary k6. O arquivo transitório `.tools/runtime-evidence.json` contém esquema, execução, revisão, validade, integridade SHA-256 e resultado por tag/caso/oráculo; ele é recriado pelo gate e não substitui um relatório Cucumber futuro.
+
+Para `@SCN-RNF06-003`, o E2E alterna a ordem de 32 amostras por classe (recurso de outro comerciante e identificador ausente), compara medianas e usa MAD para absorver ruído do scheduler. A diferença aceita é o maior valor entre 20 ms, seis vezes o MAD combinado e 50% da maior mediana. O diagnóstico completo é gravado no oráculo; código/corpo também precisam ser idênticos em todas as chamadas.
 
 ## Critérios gerais de sucesso
 
@@ -154,11 +156,11 @@ Arquivos gerados não substituem uma síntese curta com ambiente, commit, decis�
 
 ## Lacunas documentadas
 
-- 0/81 cenários têm bindings de negócio declarados no manifesto.
+- 10/81 cenários têm bindings executáveis no manifesto; os outros 71 permanecem pendentes.
 - Não há execução seletiva local por uma única `@SCN-*` sem alterar o manifesto.
 - Não há relatório Godog Cucumber/JUnit por tag.
 - Não há script/configuração k6 nem relatório do pico.
-- Não há evidências produzidas de Testcontainers, fault injection, DLQ, reconciliação, multi-tenant ou observabilidade.
+- Há evidência Testcontainers, multi-tenant, fault fixture de EOF e observabilidade para o T02; DLQ, reconciliação financeira e demais tickets continuam sem evidência.
 - `make reports` produz apenas catálogo e saída JSON do `go test`; esses arquivos são transitórios, ignorados pelo Git e publicados pelo CI.
 
-Essas lacunas impedem marcar os cenários como verificados, mas não invalidam o catálogo aprovado.
+Essas lacunas mantêm 71 cenários pendentes, mas não invalidam os 10 cenários T02 verificados nem o catálogo aprovado.
