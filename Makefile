@@ -58,6 +58,8 @@ format-check: tools
 
 generate: tools
 	$(BUF) generate
+	mkdir -p gen/go/cashflow/ledger/rpc
+	cp scripts/templates/ledger_internal_adapter.go.tmpl gen/go/cashflow/ledger/rpc/ledger_internal.go
 	$(BUF) generate --template buf.gen.openapi.yaml --path proto/cashflow/ledger/public/v1 --path proto/cashflow/consolidation/public/v1
 	mkdir -p api/descriptors
 	$(BUF) build -o api/descriptors/current.binpb
@@ -80,9 +82,10 @@ build:
 
 lint: proto-lint
 	go vet ./...
+	cd deploy/edge/krakend/plugins/no-redirect && go vet ./...
 
 test:
-	go test -race -count=1 ./...
+	./scripts/run-tests.sh
 
 integration: check-go-version
 	@mkdir -p evidence/reports/integration
@@ -106,6 +109,7 @@ clean-reports:
 
 reports:
 	./scripts/ci-reports.sh
+	go run ./cmd/bddcheck -features features -manifest features/implemented_scenarios.txt -json > evidence/reports/bdd-catalog.json
 
 ci: check-go-version generate-check format-check lint proto-breaking build test integration bdd-parse
 
