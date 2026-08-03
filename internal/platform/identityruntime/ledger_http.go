@@ -19,24 +19,27 @@ import (
 
 type LedgerHTTPConfig struct {
 	Verifier     *auth.Verifier
-	Owners       map[string]string
+	Server       ledgerv1.LedgerServiceServer
 	MaxBodyBytes int64
 	Logger       *slog.Logger
 	Metrics      *runtimeobs.Metrics
 }
 
-type ledgerPublicServer struct {
+type MockLedgerServer struct {
 	ledgerv1.UnimplementedLedgerServiceServer
 	owners map[string]string
 }
 
+func NewMockLedgerServer(owners map[string]string) ledgerv1.LedgerServiceServer {
+	return &MockLedgerServer{owners: copyOwners(owners)}
+}
+
 func NewLedgerHTTPHandler(config LedgerHTTPConfig) (http.Handler, error) {
-	if config.Verifier == nil || config.Logger == nil || config.Metrics == nil {
-		return nil, errors.New("identityruntime: ledger verifier, logger and metrics are required")
+	if config.Verifier == nil || config.Logger == nil || config.Metrics == nil || config.Server == nil {
+		return nil, errors.New("identityruntime: ledger verifier, server, logger and metrics are required")
 	}
-	server := &ledgerPublicServer{owners: copyOwners(config.Owners)}
 	gateway := runtime.NewServeMux()
-	if err := ledgerv1.RegisterLedgerServiceHandlerServer(context.Background(), gateway, server); err != nil {
+	if err := ledgerv1.RegisterLedgerServiceHandlerServer(context.Background(), gateway, config.Server); err != nil {
 		return nil, err
 	}
 
@@ -66,15 +69,15 @@ func NewLedgerHTTPHandler(config LedgerHTTPConfig) (http.Handler, error) {
 	return mux, nil
 }
 
-func (s *ledgerPublicServer) CreateEntry(context.Context, *ledgerv1.CreateEntryRequest) (*ledgerv1.CreateEntryResponse, error) {
+func (s *MockLedgerServer) CreateEntry(context.Context, *ledgerv1.CreateEntryRequest) (*ledgerv1.CreateEntryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "financial commands are outside T02")
 }
 
-func (s *ledgerPublicServer) CreateReversal(context.Context, *ledgerv1.CreateReversalRequest) (*ledgerv1.CreateReversalResponse, error) {
+func (s *MockLedgerServer) CreateReversal(context.Context, *ledgerv1.CreateReversalRequest) (*ledgerv1.CreateReversalResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "financial commands are outside T02")
 }
 
-func (s *ledgerPublicServer) GetEntry(ctx context.Context, request *ledgerv1.GetEntryRequest) (*ledgerv1.GetEntryResponse, error) {
+func (s *MockLedgerServer) GetEntry(ctx context.Context, request *ledgerv1.GetEntryRequest) (*ledgerv1.GetEntryResponse, error) {
 	identity, ok := auth.IdentityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "identity missing from adapter context")
@@ -92,7 +95,7 @@ func (s *ledgerPublicServer) GetEntry(ctx context.Context, request *ledgerv1.Get
 	return &ledgerv1.GetEntryResponse{Entry: &ledgerv1.LedgerEntry{EntryId: request.GetEntryId()}}, nil
 }
 
-func (s *ledgerPublicServer) ListEntries(ctx context.Context, _ *ledgerv1.ListEntriesRequest) (*ledgerv1.ListEntriesResponse, error) {
+func (s *MockLedgerServer) ListEntries(ctx context.Context, _ *ledgerv1.ListEntriesRequest) (*ledgerv1.ListEntriesResponse, error) {
 	identity, ok := auth.IdentityFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "identity missing from adapter context")
@@ -107,7 +110,7 @@ func (s *ledgerPublicServer) ListEntries(ctx context.Context, _ *ledgerv1.ListEn
 	return &ledgerv1.ListEntriesResponse{Entries: entries}, nil
 }
 
-func (s *ledgerPublicServer) OwnerOf(_ context.Context, resourceID string) (string, bool, error) {
+func (s *MockLedgerServer) OwnerOf(_ context.Context, resourceID string) (string, bool, error) {
 	owner, ok := s.owners[resourceID]
 	return owner, ok, nil
 }
