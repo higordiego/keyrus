@@ -3,12 +3,6 @@ SHELL := /bin/sh
 GO_VERSION := 1.26.4
 TOOLS_BIN := $(CURDIR)/.tools/bin
 TOOLS_VERSIONS := $(CURDIR)/.tools/versions
-RUNTIME_EVIDENCE := $(CURDIR)/.tools/runtime-evidence.json
-# Minted once per `make` invocation and never written to disk. Both the direct
-# E2E run and the BDD suite it feeds share this key so the suite can trust and
-# reuse the evidence the first run just produced instead of starting a second
-# real stack; a file left over from anywhere else cannot pass its attestation.
-RUNTIME_EVIDENCE_KEY := $(shell head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 BUF := $(TOOLS_BIN)/buf
 BUF_VERSION := v1.57.2
 PROTOC_GEN_GO_VERSION := v1.36.9
@@ -75,10 +69,7 @@ lint: proto-lint
 	cd deploy/edge/krakend/plugins/no-redirect && go vet ./...
 
 test:
-	rm -f $(RUNTIME_EVIDENCE)
-	CASHFLOW_RUNTIME_EVIDENCE_FILE=$(RUNTIME_EVIDENCE) CASHFLOW_RUNTIME_EVIDENCE_KEY=$(RUNTIME_EVIDENCE_KEY) go test -race -count=1 -timeout 45m -run '^TestRealEdgeIdentityRuntime$$' ./test/integration
-	CASHFLOW_SKIP_REAL_E2E=1 CASHFLOW_RUNTIME_EVIDENCE_FILE=$(RUNTIME_EVIDENCE) CASHFLOW_RUNTIME_EVIDENCE_KEY=$(RUNTIME_EVIDENCE_KEY) go test -race -count=1 -timeout 45m ./...
-	cd deploy/edge/krakend/plugins/no-redirect && go test -race -count=1 ./...
+	./scripts/run-tests.sh
 
 bdd-parse:
 	go run ./cmd/bddcheck -features features -manifest features/implemented_scenarios.txt
@@ -87,10 +78,7 @@ clean-reports:
 	rm -f evidence/reports/go-test.json evidence/reports/bdd-catalog.json
 
 reports:
-	mkdir -p evidence/reports
-	rm -f $(RUNTIME_EVIDENCE)
-	CASHFLOW_RUNTIME_EVIDENCE_FILE=$(RUNTIME_EVIDENCE) CASHFLOW_RUNTIME_EVIDENCE_KEY=$(RUNTIME_EVIDENCE_KEY) go test -race -count=1 -timeout 45m -json -run '^TestRealEdgeIdentityRuntime$$' ./test/integration > evidence/reports/go-test.json
-	CASHFLOW_SKIP_REAL_E2E=1 CASHFLOW_RUNTIME_EVIDENCE_FILE=$(RUNTIME_EVIDENCE) CASHFLOW_RUNTIME_EVIDENCE_KEY=$(RUNTIME_EVIDENCE_KEY) go test -race -count=1 -timeout 45m -json ./... >> evidence/reports/go-test.json
+	./scripts/run-reports.sh
 	go run ./cmd/bddcheck -features features -manifest features/implemented_scenarios.txt -json > evidence/reports/bdd-catalog.json
 
 ci: check-go-version generate-check format-check lint proto-breaking build test bdd-parse

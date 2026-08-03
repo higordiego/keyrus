@@ -9,8 +9,10 @@
 // binding fail instead of passing.
 //
 // Second, integrity is attested with a key the file does not carry. The
-// verifying process mints an ephemeral key, hands it only to the real E2E it
-// spawns, and keeps it in memory. A public SHA-256 is still recorded so
+// verifying process mints an ephemeral key and hands it to the real E2E it
+// spawns only through the path to a private (0600) temporary file -- never as
+// a command-line argument or an echoed variable value, so it cannot end up in
+// a shell trace or a build log. A public SHA-256 is still recorded so
 // accidental corruption is reported precisely, but recomputing it cannot make a
 // hand-written file acceptable: without the run key the attestation fails.
 package runtimeevidence
@@ -38,8 +40,11 @@ const (
 	Runtime       = "keycloak+krakend+bypass-krakend+ledger-image+consolidation-image+otel-collector+fault-backend"
 	DefaultCase   = "default"
 
-	// KeyEnvVar names the ephemeral attestation key handed to the spawned E2E.
-	KeyEnvVar = "CASHFLOW_RUNTIME_EVIDENCE_KEY"
+	// KeyFileEnvVar names the private file carrying the ephemeral attestation
+	// key handed to the spawned E2E. Only this path travels as an environment
+	// value or command-line argument; the key bytes never do, so no build log,
+	// shell trace or `make -n` dry run can print them.
+	KeyFileEnvVar = "CASHFLOW_RUNTIME_EVIDENCE_KEY_FILE"
 	// FileEnvVar names the path the spawned E2E must write.
 	FileEnvVar = "CASHFLOW_RUNTIME_EVIDENCE_FILE"
 
@@ -167,20 +172,58 @@ func NewKey() ([]byte, error) {
 	return key, nil
 }
 
-// KeyFromEnv reads the key handed down by the process that owns the run.
-func KeyFromEnv() ([]byte, error) {
-	encoded := os.Getenv(KeyEnvVar)
-	if encoded == "" {
-		return nil, fmt.Errorf("runtimeevidence: %s is not set", KeyEnvVar)
+// WriteKeyFile mints a fresh attestation key and writes it, hex-encoded, to a
+// private (0600) temporary file. It returns the file's path -- the only thing
+// meant to travel as an environment value or command-line argument -- the
+// key bytes themselves, and a cleanup function the caller must run once the
+// key is no longer needed. The key is never printed, logged or passed
+// directly as an argument or an echoed variable value.
+func WriteKeyFile() (path string, key []byte, cleanup func(), err error) {
+	key, err = NewKey()
+	if err != nil {
+		return "", nil, nil, err
 	}
-	key, err := hex.DecodeString(encoded)
+	file, err := os.CreateTemp("", "cashflow-evidence-key-*")
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("runtimeevidence: create key file: %w", err)
+	}
+	cleanup = func() { _ = os.Remove(file.Name()) }
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", nil, nil, fmt.Errorf("runtimeevidence: restrict key file permissions: %w", err)
+	}
+	if _, err := file.WriteString(hex.EncodeToString(key)); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", nil, nil, fmt.Errorf("runtimeevidence: write key file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", nil, nil, fmt.Errorf("runtimeevidence: close key file: %w", err)
+	}
+	return file.Name(), key, cleanup, nil
+}
+
+// KeyFromEnv reads the attestation key from the private file named by
+// KeyFileEnvVar. Only a file path ever crosses this boundary; the key bytes
+// are read from disk exactly once and never appear in any argument list or
+// echoed variable value.
+func KeyFromEnv() ([]byte, error) {
+	path := os.Getenv(KeyFileEnvVar)
+	if path == "" {
+		return nil, fmt.Errorf("runtimeevidence: %s is not set", KeyFileEnvVar)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("runtimeevidence: read %s: %w", KeyFileEnvVar, err)
+	}
+	key, err := hex.DecodeString(strings.TrimSpace(string(contents)))
 	if err != nil || len(key) != keyBytes {
-		return nil, fmt.Errorf("runtimeevidence: %s must be %d hex-encoded bytes", KeyEnvVar, keyBytes)
+		return nil, fmt.Errorf("runtimeevidence: %s must contain %d hex-encoded bytes", KeyFileEnvVar, keyBytes)
 	}
 	return key, nil
 }
-
-func EncodeKey(key []byte) string { return hex.EncodeToString(key) }
 
 func New(runID, revision, sourceDigest string, now time.Time) Evidence {
 	return Evidence{
