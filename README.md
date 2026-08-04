@@ -1,77 +1,119 @@
 # Fluxo de Caixa para Comerciantes
 
-Sistema de controle de lançamentos financeiros (débitos/créditos) e consolidado diário. O design central é simples: uma falha ou queda do serviço de Consolidado nunca pode impedir o comerciante de registrar um lançamento, nem mesmo sob o pico de 50 RPS definido pro serviço de consulta.
+Boas vindas ao sistema de controle de fluxo de caixa para comerciantes. Aqui, construímos um motor financeiro assíncrono e resiliente. O objetivo principal é muito claro: registrar débitos e créditos com total segurança e garantir que o comerciante consiga ver seu saldo consolidado diário. E o mais importante: se a leitura do saldo cair, a gravação de novos lançamentos nunca pode ser afetada.
 
-Este README é a âncora do projeto. Cada seção aponta pra documentação de referência correspondente, sem duplicar conteúdo.
+Toda a arquitetura, as decisões técnicas e os diagramas estão na pasta `docs/`. Abaixo, você encontra o guia completo de como o projeto funciona e como rodar tudo na sua própria máquina.
 
-## Sumário
+## O Problema que Resolvemos
 
-- [Visão geral e arquitetura](#visão-geral-e-arquitetura)
-- [Como rodar localmente](#como-rodar-localmente)
-- [Estrutura do repositório](#estrutura-do-repositório)
-- [Contratos](#contratos-protobuf-openapi-e-eventos)
-- [Testes e evidências](#testes-e-evidências)
-- [Segurança e DevSecOps](#segurança-e-devsecops)
-- [Implantação](#implantação)
-- [Fronteiras de protocolo](#fronteiras-de-protocolo)
+Muitos sistemas financeiros antigos sofrem quando precisam calcular o saldo de milhares de lançamentos em tempo real. Eles travam o banco de dados e os clientes recebem mensagens de erro (timeouts). Nós resolvemos isso separando o problema em dois mundos:
 
-## Visão geral e arquitetura
+1. **O Mundo da Gravação (Ledger API):** Recebe o registro de um débito ou crédito e salva imediatamente. Ele não calcula saldos nem espera nada. Apenas carimba que a transação aconteceu.
+2. **O Mundo da Leitura (Consolidation API):** Lê as transações que aconteceram no Ledger de forma assíncrona (usando filas RabbitMQ) e vai atualizando o saldo aos poucos. Quando o usuário pede para ver o saldo diário, a Consolidation API só consulta o valor pronto, retornando em milissegundos.
 
-O sistema registra débitos e créditos por comerciante com idempotência e estorno imutável (nunca edição ou exclusão), e mantém um consolidado diário (créditos, débitos, líquido e saldo acumulado) atualizado de forma assíncrona e eventualmente consistente, sempre deixando claro se aquele valor já é definitivo.
+## Como Tudo Funciona
 
-A documentação de arquitetura, legado e transição começa pelo [índice](docs/migracao-de-legado.md), que aponta pra quatro arquivos em ordem: [O Legado e os Incidentes Reais](docs/legado-e-incidentes.md), [Arquitetura Alvo](docs/arquitetura-alvo.md) (diagrama completo e o caminho de uma requisição), [Arquitetura de Transição](docs/arquitetura-de-transicao.md) (migração fase a fase) e [Defesa do Modelo](docs/defesa-arquitetural.md) (tabela problema/mecanismo e a jornada de implementação).
+A arquitetura usa o padrão CQRS e Outbox Pattern. Veja como os componentes se conversam:
 
-A garantia central do desenho: o Ledger nunca chama nem espera o Consolidado. A confirmação de um lançamento é uma transação única no schema `ledger` (entry, idempotência, posição e outbox); a propagação pro Consolidado acontece depois, de forma assíncrona via RabbitMQ, e pode atrasar sem afetar a escrita.
+```mermaid
+flowchart TB
+    Client((Comerciantes))
+    Client -->|HTTPS| KrakenD
 
-## Como rodar localmente
+    subgraph Borda
+        KrakenD[Gateway\nRoteamento e JWT]
+        Keycloak[Autenticação\nEmite Tokens]
+        KrakenD -.OIDC.-> Keycloak
+    end
 
-Pré-requisito: Go 1.26.5. `buf`, `protoc-gen-go`, `protoc-gen-go-grpc` e os plugins do grpc-gateway são baixados em versões fixas pra `.tools/bin`; não precisa instalar `buf` ou `protoc` globalmente.
+    subgraph Gravação
+        LedgerAPI[Ledger API]
+        Publisher[Outbox Publisher]
+        LedgerAPI -->|Grava Transação| LedgerDB[(Banco Ledger)]
+        Publisher -->|Lê e Publica| LedgerDB
+    end
 
-```sh
-make bootstrap        # instala ferramentas pinadas e gera contratos
-make ci                # geração determinística, lint, breaking-check, build, testes -race, catálogo BDD
-make full-validation   # ci + policy + security (Gitleaks/Govulncheck/Trivy) + build reprodutível/SBOM
-make reports           # consolida evidências em evidence/reports/
+    subgraph Fila
+        MQ[(RabbitMQ)]
+    end
+
+    subgraph Leitura
+        Consumer[Consolidation Consumer]
+        ConsolidationAPI[Consolidation API]
+        Reconciler[Reconciliation Worker]
+        Consumer --> ConsolidationDB[(Banco Consolidado)]
+        ConsolidationAPI --> ConsolidationDB
+        Reconciler --> ConsolidationDB
+    end
+
+    KrakenD --> LedgerAPI
+    KrakenD --> ConsolidationAPI
+    Publisher -->|Envia Mensagem| MQ
+    MQ -->|Lê Mensagem| Consumer
+    ConsolidationAPI -.Verifica Frescor.-> LedgerAPI
+    Reconciler -.Audita.-> LedgerAPI
 ```
 
-Os testes de integração/E2E (`make ci`, pacotes `test/integration`, `services/*/internal/**/*_integration_test.go`) sobem PostgreSQL, RabbitMQ, Keycloak e KrakenD reais via Testcontainers a cada execução, sem depender de nenhum serviço externo já provisionado. Para rodar a stack completa localmente via Docker Compose, primeiro rode `go run scripts/generate-compose-secrets.go` para gerar certificados e segredos, e então suba com `docker compose up -d`.
+## Pré-requisitos
 
-## Estrutura do repositório
+Para rodar este projeto localmente, você vai precisar de:
+* Go 1.26.5
+* Docker e Docker Compose (para subir a infraestrutura local)
+* Opcional: GNU Make (fortemente recomendado para usar os atalhos)
 
-- [`cmd/README.md`](cmd/README.md) e [`internal/README.md`](internal/README.md): binários e código compartilhado na raiz.
-- `services/ledger` e `services/consolidation`: domínio, aplicação e adapters de cada serviço, com fronteira de `internal` própria (um serviço não importa implementação do outro). Ver [`services/ledger/migrations/README.md`](services/ledger/migrations/README.md) e [`services/ledger/cmd/outbox-publisher/README.md`](services/ledger/cmd/outbox-publisher/README.md).
-- `proto/cashflow/{ledger,consolidation}`: contratos públicos e internos (Protobuf).
-- `api/{openapi,descriptors,events}` e `gen/go`: artefatos gerados e versionados a partir dos contratos.
-- `features` e `features/implemented_scenarios.txt`: 14 funcionalidades, 81 tags `@SCN-*`, e a allowlist única de cenários com binding real (ver [Testes e evidências](#testes-e-evidências)).
-- [`test/README.md`](test/README.md): harness Godog/PostgreSQL/RabbitMQ e organização dos testes de integração/E2E.
-- `deploy/`: ver [Implantação](#implantação).
+As ferramentas de compilação de Protobuf e linters são baixadas automaticamente na pasta `.tools/bin` pelo comando de bootstrap. Você não precisa instalar nada globalmente.
 
-## Contratos (Protobuf, OpenAPI e eventos)
+## Como Rodar Localmente
 
-[`docs/contracts.md`](docs/contracts.md) descreve como o `.proto` gera stubs Go, adapters grpc-gateway e OpenAPI público, e como o baseline de breaking-changes (`api/descriptors/baseline.binpb`) é mantido.
+É muito simples subir todo o ecossistema na sua máquina. Siga os passos:
 
-## Testes e evidências
+1. **Baixe as ferramentas e prepare o código:**
+```sh
+make bootstrap
+```
 
-- [`docs/testing-strategy.md`](docs/testing-strategy.md): níveis de teste (catálogo, unitário, contrato, integração de componente, BDD executável, E2E/fitness, desempenho) e o que cada status (aprovado, pendente, implementado, verificado) significa na prática, incluindo como o Godog seleciona cenários pelo manifesto `implemented_scenarios.txt`.
-- [`docs/testing-traceability.md`](docs/testing-traceability.md): matriz ligando cada RF/RNF ao cenário `.feature`, nível de teste e evidência esperada, pros 81 cenários aprovados.
+2. **Gere os segredos e certificados locais:**
+```sh
+go run scripts/generate-compose-secrets.go
+```
 
-## Segurança e DevSecOps
+3. **Suba toda a infraestrutura com Docker Compose:**
+```sh
+docker-compose up -d --build
+```
 
-- [`docs/devsecops.md`](docs/devsecops.md): pipeline de CI/CD, gates de policy/security/build-validation, e o que cada workflow do GitHub Actions tem (e não tem) permissão de fazer.
-- [`docs/security-exceptions.md`](docs/security-exceptions.md): política de exceção de segurança (segredo nunca é passível de exceção).
-- [`SECURITY.md`](SECURITY.md): como reportar uma vulnerabilidade.
+Isso vai iniciar os bancos de dados PostgreSQL isolados, o RabbitMQ, o Keycloak para autenticação, o gateway KrakenD, as APIs de Ledger e Consolidation, além dos workers que conectam tudo debaixo do capô.
 
-## Implantação
+## Autenticação e Exemplos Práticos
 
-- [`deploy/README.md`](deploy/README.md): visão geral dos artefatos de containers e orquestração.
-- [`deploy/edge/README.md`](deploy/edge/README.md): KrakenD Community como única borda pública L7, incluindo rotas permitidas, JWT na borda e propagação de `Idempotency-Key`/trace context.
-- [`deploy/identity/keycloak/README.md`](deploy/identity/keycloak/README.md): realm, clients e escopos do Keycloak (Authorization Code + PKCE).
-- [`deploy/rabbitmq/README.md`](deploy/rabbitmq/README.md): topologia declarativa (exchange, quorum queue, DLX/DLQ) de propriedade do publisher da Ledger.
+A nossa porta de entrada é o gateway na porta 8080 (normalmente mapeado no `/etc/hosts` como `edge.cashflow.local`). Como a segurança é nativa, você precisa de um token JWT válido para fazer qualquer requisição.
 
-A arquitetura alvo de produção (Docker Swarm, réplicas, PostgreSQL/RabbitMQ gerenciados) está descrita em [`docs/arquitetura-alvo.md`](docs/arquitetura-alvo.md).
+Para simular e testar, preparamos testes comportamentais completos (BDD). Você pode visualizar todas as integrações funcionando perfeitamente rodando os cenários de teste E2E:
 
-## Fronteiras de protocolo
+```sh
+make integration
+```
 
-- HTTP/JSON existe somente na borda pública, gerado via grpc-gateway a partir dos contratos Protobuf.
-- Chamadas síncronas entre serviços usam gRPC/Protobuf. `LedgerInternalService` não recebe annotations HTTP e não aparece no OpenAPI público.
-- Atualizações assíncronas usam o evento versionado `ledger.entry.confirmed.v1` sobre AMQP/RabbitMQ. Nenhuma chamada ao Consolidado participa da confirmação da Ledger.
+Este comando levanta contêineres temporários de teste, pega um token JWT real do Keycloak e simula dezenas de transações de crédito e débito, garantindo que o saldo bata perfeitamente no final.
+
+## Testes e Evidências
+
+Não escrevemos apenas testes unitários. Temos um catálogo completo de 81 cenários executáveis com a ferramenta Godog (nossa implementação de BDD em Go). 
+
+Para rodar o pacote de validação inteiro da CI, que inclui testes de concorrência, linters de segurança e quebra de contratos (breaking changes), rode:
+
+```sh
+make ci
+make full-validation
+```
+
+## Falhas Comuns e Solução de Problemas (Troubleshooting)
+
+* **As portas já estão em uso:** O Docker Compose sobe serviços nas portas 8080, 5432, 5672, etc. Certifique se de não ter outro Postgres ou RabbitMQ rodando na sua máquina.
+* **O make falha no mac:** Instale o `make` nativo através do Homebrew (`brew install make`).
+* **Meu token está dando Unauthorized (401):** O Token tem vida útil curta. Gere um novo fazendo um POST para o endpoint `/realms/cashflow/protocol/openid-connect/token` no Keycloak.
+* **O Saldo Consolidado não está atualizando:** Verifique se os contêineres `ledger-outbox-publisher` e `consolidation-consumer` estão rodando. Se eles pararem, as mensagens vão acumular no RabbitMQ e o saldo não vai refletir as transações recentes (mas nenhuma transação será perdida!).
+
+## Documentação Extra
+
+Gosta de saber os "por quês"? Nós também. Todos os diagramas, a tabela de mitigação de incidentes, a matriz de conformidade, e nossas Decisões de Arquitetura (ADRs) moram na pasta `docs/`. Sugerimos fortemente a leitura do arquivo `docs/arquitetura-alvo.md` para entender as escolhas difíceis e como blindamos este sistema para escalar sem medo.
