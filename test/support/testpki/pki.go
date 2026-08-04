@@ -55,11 +55,11 @@ func New(directory string) (Bundle, error) {
 	if err := writePEM(caPath, "CERTIFICATE", authorityDER, 0o600); err != nil {
 		return Bundle{}, err
 	}
-	keycloak, err := issue(directory, "keycloak", 2, authority, authorityKey, []string{"keycloak"}, []net.IP{net.ParseIP("127.0.0.1")}, x509.ExtKeyUsageServerAuth)
+	keycloak, err := issue(directory, "keycloak", 2, authority, authorityKey, []string{"keycloak", "localhost", "edge.cashflow.local"}, []net.IP{net.ParseIP("127.0.0.1")}, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return Bundle{}, err
 	}
-	ledger, err := issue(directory, "ledger-api", 3, authority, authorityKey, []string{"ledger-api"}, []net.IP{net.ParseIP("127.0.0.1")}, x509.ExtKeyUsageServerAuth)
+	ledger, err := issue(directory, "ledger-api", 3, authority, authorityKey, []string{"ledger-api", "localhost"}, []net.IP{net.ParseIP("127.0.0.1")}, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return Bundle{}, err
 	}
