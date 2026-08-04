@@ -19,6 +19,7 @@ import (
 	"github.com/higordiegoti/keyrus/internal/platform/observability/redact"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/outbox"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/exaring/otelpgx"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
@@ -69,6 +70,7 @@ func run(ctx context.Context, configuration config, logger *slog.Logger) error {
 		return fmt.Errorf("parse PostgreSQL DSN: %w", err)
 	}
 	poolConfig.MaxConns = int32(max(configuration.workers*2, 4))
+	poolConfig.ConnConfig.Tracer = otelpgx.NewTracer()
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return fmt.Errorf("open PostgreSQL pool: %w", err)

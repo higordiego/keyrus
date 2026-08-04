@@ -155,9 +155,20 @@ services:
     image: cashflow-reconciliation-worker:latest
     environment:
       CASHFLOW_CONSOLIDATION_DSN: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CASHFLOW_OIDC_TOKEN_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/token
+      CASHFLOW_OIDC_CA_FILE: /etc/cashflow/ca.pem
+      CASHFLOW_SERVICE_CLIENT_SECRET_FILE: /run/secrets/reconciliation-client-secret
       CASHFLOW_LEDGER_GRPC_TARGET: ledger-api:9081
+      CASHFLOW_GRPC_TLS_CERT_FILE: /etc/cashflow/consolidation.crt
+      CASHFLOW_GRPC_TLS_KEY_FILE: /etc/cashflow/consolidation.key
+      CASHFLOW_GRPC_CA_FILE: /etc/cashflow/ca.pem
+      CASHFLOW_GRPC_SERVER_NAME: ledger-api
+      CASHFLOW_OTLP_ENDPOINT: otel-collector:4317
     networks:
       - cashflow-net
+    volumes:
+      - ./secrets/certs:/etc/cashflow:ro
+      - ./secrets/reconciliation-client-secret:/run/secrets/reconciliation-client-secret:ro
     depends_on:
       - postgres
       - ledger-api

@@ -17,4 +17,6 @@ RUN apk add --no-cache ca-certificates \
     && adduser -S -D -H -u 65532 -G cashflow cashflow
 COPY --from=build /out/reconciliation-worker /usr/local/bin/reconciliation-worker
 USER 65532:65532
+EXPOSE 9092
+HEALTHCHECK --interval=10s --timeout=2s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:9092/health/ready || exit 1
 ENTRYPOINT ["/usr/local/bin/reconciliation-worker"]

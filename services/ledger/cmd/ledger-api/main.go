@@ -27,6 +27,7 @@ import (
 	"github.com/higordiegoti/keyrus/services/ledger/internal/adapters/outbound/postgres"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/application"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/exaring/otelpgx"
 )
 
 func main() {
@@ -62,9 +63,14 @@ func run(logger *slog.Logger) error {
 		}
 		inboundServer = identityruntime.NewMockLedgerServer(owners)
 	} else {
-		pool, err := pgxpool.New(context.Background(), required("CASHFLOW_DB_URL"))
+		poolConfig, err := pgxpool.ParseConfig(required("CASHFLOW_DB_URL"))
 		if err != nil {
-			return fmt.Errorf("pgxpool.New: %w", err)
+			return fmt.Errorf("pgxpool.ParseConfig: %w", err)
+		}
+		poolConfig.ConnConfig.Tracer = otelpgx.NewTracer()
+		pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
+		if err != nil {
+			return fmt.Errorf("pgxpool.NewWithConfig: %w", err)
 		}
 		defer pool.Close()
 		store, err := postgres.New(pool)
