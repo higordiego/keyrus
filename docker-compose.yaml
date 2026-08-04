@@ -120,6 +120,34 @@ services:
       - keycloak
       - ledger-api
 
+  ledger-outbox-publisher:
+    build:
+      context: .
+      dockerfile: deploy/identity/outbox-publisher.Containerfile
+    image: cashflow-outbox-publisher:latest
+    environment:
+      OUTBOX_POSTGRES_DSN: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      OUTBOX_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    networks:
+      - cashflow-net
+    depends_on:
+      - postgres
+      - rabbitmq
+
+  consolidation-consumer:
+    build:
+      context: .
+      dockerfile: deploy/identity/consolidation-consumer.Containerfile
+    image: cashflow-consolidation-consumer:latest
+    environment:
+      CONSOLIDATION_DATABASE_URL: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CONSUMER_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    networks:
+      - cashflow-net
+    depends_on:
+      - postgres
+      - rabbitmq
+
   # ---------------------------------------------------------
   # EDGE GATEWAY
   # ---------------------------------------------------------
