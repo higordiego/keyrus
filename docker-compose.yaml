@@ -31,8 +31,11 @@ services:
       - rabbitmq-data:/var/lib/rabbitmq
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.3.3
-    command: start --import-realm --http-enabled=false --https-port=8443 --https-certificate-file=/etc/cashflow/keycloak.crt --https-certificate-key-file=/etc/cashflow/keycloak.key --hostname-strict=false
+    build:
+      context: .
+      dockerfile: deploy/identity/keycloak.Containerfile
+    image: cashflow-keycloak:latest
+    command: start --optimized --import-realm --http-enabled=false --https-port=8443 --https-certificate-file=/etc/cashflow/keycloak.crt --https-certificate-key-file=/etc/cashflow/keycloak.key --hostname-strict=false
     environment:
       KC_DB: postgres
       KC_DB_URL_HOST: postgres
