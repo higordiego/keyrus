@@ -19,6 +19,8 @@ type Metrics struct {
 	appliedNanos     atomic.Uint64
 	pendingRetry     atomic.Int64
 	pendingDLQ       atomic.Int64
+	gaps             atomic.Int64
+	recomputes       atomic.Int64
 }
 
 func (m *Metrics) RecordApplied(duration time.Duration, duplicate bool) {
@@ -33,9 +35,11 @@ func (m *Metrics) RecordRetry()           { m.retries.Add(1) }
 func (m *Metrics) RecordDeadLetter()      { m.deadLettered.Add(1) }
 func (m *Metrics) RecordConnectionError() { m.connectionErrors.Add(1) }
 
-func (m *Metrics) UpdateBacklog(retry, dlq int64) {
+func (m *Metrics) UpdateBacklog(retry, dlq, gaps, recomputes int64) {
 	m.pendingRetry.Store(retry)
 	m.pendingDLQ.Store(dlq)
+	m.gaps.Store(gaps)
+	m.recomputes.Store(recomputes)
 }
 
 func (m *Metrics) WritePrometheus(writer io.Writer) error {
@@ -53,6 +57,8 @@ func (m *Metrics) WritePrometheus(writer io.Writer) error {
 		{"consolidation_consumer_applied_duration_seconds_total", "Total time spent applying successfully processed deliveries.", "counter", float64(m.appliedNanos.Load()) / float64(time.Second)},
 		{"consolidation_consumer_pending_retry", "Events currently pending in transient retry state.", "gauge", m.pendingRetry.Load()},
 		{"consolidation_consumer_pending_dlq", "Events currently isolated in DLQ pending state; a non-zero value should page.", "gauge", m.pendingDLQ.Load()},
+		{"consolidation_consumer_gaps", "Merchants with missing position sequences.", "gauge", m.gaps.Load()},
+		{"consolidation_consumer_recomputes", "Active or failed recomputes.", "gauge", m.recomputes.Load()},
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(writer, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", line.name, line.help, line.name, line.kind, line.name, line.value); err != nil {

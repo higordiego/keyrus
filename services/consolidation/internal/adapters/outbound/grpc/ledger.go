@@ -18,3 +18,6 @@ func NewLedgerWatermarkClient(client ledgerrpc.Client) *LedgerWatermarkClient {
 func (c *LedgerWatermarkClient) GetMerchantWatermark(ctx context.Context, merchantID string) (uint64, time.Time, error) {
 	return c.client.GetMerchantWatermark(ctx, merchantID)
 }
+func (c *LedgerWatermarkClient) StreamEntriesAtCut(ctx context.Context, merchantID string, cut uint64) (*ledgerrpc.EntryStream, error) {
+	return c.client.StreamEntriesAtCut(ctx, merchantID, cut)
+}

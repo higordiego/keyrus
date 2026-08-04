@@ -161,6 +161,16 @@ func insertInbox(ctx context.Context, tx pgx.Tx, event domain.EntryConfirmed) (b
 	return command.RowsAffected() == 1, nil
 }
 
+func (s *Store) SystemStats(ctx context.Context) (gaps int64, recomputes int64, err error) {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM consolidation.merchant_progress WHERE first_gap IS NOT NULL`).Scan(&gaps); err != nil {
+		return 0, 0, classifyPersistenceError("count gaps", err)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM consolidation.recompute_job WHERE status IN ('failed', 'running')`).Scan(&recomputes); err != nil {
+		return 0, 0, classifyPersistenceError("count recomputes", err)
+	}
+	return gaps, recomputes, nil
+}
+
 func resolveDuplicate(ctx context.Context, tx pgx.Tx, event domain.EntryConfirmed) (application.ProjectionResult, error) {
 	var persistedMerchant, persistedFingerprint string
 	var persistedPosition int64

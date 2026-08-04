@@ -16,10 +16,12 @@ import (
 	"time"
 
 	apievents "github.com/higordiegoti/keyrus/api/events"
+	"github.com/higordiegoti/keyrus/internal/platform/observability/redact"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/outbox"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
@@ -42,7 +44,7 @@ type config struct {
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := slog.New(redact.NewHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	configuration, err := loadConfig()
 	if err != nil {
 		logger.Error("invalid outbox publisher configuration", "error", err)
@@ -280,6 +282,7 @@ func configureTracing(ctx context.Context) (func(context.Context) error, error) 
 	}
 	provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(resources))
 	otel.SetTracerProvider(provider)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 	return provider.Shutdown, nil
 }
 
