@@ -18,6 +18,7 @@ import (
 	_ "time/tzdata"
 
 	ledgerv1 "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/public/v1"
+	ledgerrpc "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/rpc"
 	"github.com/higordiegoti/keyrus/internal/platform/auth"
 	"github.com/higordiegoti/keyrus/internal/platform/grpcsecurity"
 	"github.com/higordiegoti/keyrus/internal/platform/identityruntime"
@@ -55,13 +56,22 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("internal Verifier: %w", err)
 	}
+	position, err := identityruntime.ParseUint64(os.Getenv("CASHFLOW_SOURCE_POSITION"), 0)
+	if err != nil {
+		return fmt.Errorf("ParseUint64: %w", err)
+	}
+
 	var inboundServer ledgerv1.LedgerServiceServer
+	var internalHandler ledgerrpc.Handler
+	var readiness func(context.Context) error
 	if fixture := os.Getenv("CASHFLOW_IDENTITY_FIXTURE_OWNERS"); fixture != "" {
 		owners, err := identityruntime.ParseOwners(fixture)
 		if err != nil {
 			return fmt.Errorf("ParseOwners: %w", err)
 		}
 		inboundServer = identityruntime.NewMockLedgerServer(owners)
+		internalHandler = identityruntime.NewMockInternalHandler(position)
+		readiness = func(context.Context) error { return nil }
 	} else {
 		poolConfig, err := pgxpool.ParseConfig(required("CASHFLOW_DB_URL"))
 		if err != nil {
@@ -77,6 +87,7 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("postgres.New: %w", err)
 		}
+		readiness = store.Ready
 		cursorCodec, err := application.NewCursorCodec([]byte(required("CASHFLOW_CURSOR_SECRET")))
 		if err != nil {
 			return fmt.Errorf("NewCursorCodec: %w", err)
@@ -90,30 +101,16 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("NewService: %w", err)
 		}
 		inboundServer = inboundgrpc.NewServer(app)
+		internalHandler = inboundgrpc.NewInternalServer(pool)
 	}
 	delegations, err := identityruntime.ParseAssignments(required("CASHFLOW_SERVICE_TENANT_DELEGATIONS"))
 	if err != nil {
 		return fmt.Errorf("ParseAssignments: %w", err)
 	}
-	position, err := identityruntime.ParseUint64(os.Getenv("CASHFLOW_SOURCE_POSITION"), 0)
+	
+	grpcMaxDeadline, err := time.ParseDuration(value("CASHFLOW_GRPC_MAX_DEADLINE", "5s"))
 	if err != nil {
-		return fmt.Errorf("ParseUint64: %w", err)
-	}
-	grpcMaxDeadline, err := identityruntime.ParseDuration(os.Getenv("CASHFLOW_GRPC_MAX_DEADLINE"), 5*time.Second)
-	if err != nil {
-		return fmt.Errorf("ParseDuration: %w", err)
-	}
-
-	metrics := &runtimeobs.Metrics{}
-	httpHandler, err := identityruntime.NewLedgerHTTPHandler(identityruntime.LedgerHTTPConfig{
-		Verifier:     publicVerifier,
-		Server:       inboundServer,
-		Logger:       logger,
-		Metrics:      metrics,
-		MaxBodyBytes: 1048576,
-	})
-	if err != nil {
-		return err
+		return fmt.Errorf("parse CASHFLOW_GRPC_MAX_DEADLINE: %w", err)
 	}
 	grpcTLS, err := identityruntime.ServerTLS(
 		required("CASHFLOW_GRPC_TLS_CERT_FILE"),
@@ -128,8 +125,22 @@ func run(logger *slog.Logger) error {
 		Tenants:        grpcsecurity.NewStaticTenantDelegations(delegations),
 		TLS:            grpcTLS,
 		Logger:         logger,
-		SourcePosition: position,
+		Handler:        internalHandler,
 		MaxDeadline:    grpcMaxDeadline,
+		MaxRecvBytes:   2097152,
+		MaxSendBytes:   4194304,
+	})
+	if err != nil {
+		return err
+	}
+
+	metrics := &runtimeobs.Metrics{}
+	httpHandler, err := identityruntime.NewLedgerHTTPHandler(identityruntime.LedgerHTTPConfig{
+		Verifier:     publicVerifier,
+		Server:       inboundServer,
+		Logger:       logger,
+		Metrics:      metrics,
+		MaxBodyBytes: 1048576,
 	})
 	if err != nil {
 		return err
@@ -158,7 +169,7 @@ func run(logger *slog.Logger) error {
 			if !ready.Load() {
 				return errors.New("not ready")
 			}
-			return store.Ready(ctx)
+			return readiness(ctx)
 		}, metrics),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
