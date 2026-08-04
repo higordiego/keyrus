@@ -27,11 +27,11 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	ledgerrpc "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/rpc"
-	"github.com/jackc/pgx/v5/pgxpool"
 	inboundgrpc "github.com/higordiegoti/keyrus/services/consolidation/internal/adapters/inbound/grpc"
 	outboundgrpc "github.com/higordiegoti/keyrus/services/consolidation/internal/adapters/outbound/grpc"
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/adapters/outbound/postgres"
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/application"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {

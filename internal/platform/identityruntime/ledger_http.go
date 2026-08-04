@@ -38,7 +38,16 @@ func NewLedgerHTTPHandler(config LedgerHTTPConfig) (http.Handler, error) {
 	if config.Verifier == nil || config.Logger == nil || config.Metrics == nil || config.Server == nil {
 		return nil, errors.New("identityruntime: ledger verifier, server, logger and metrics are required")
 	}
-	gateway := runtime.NewServeMux()
+	gateway := runtime.NewServeMux(
+		runtime.WithIncomingHeaderMatcher(func(key string) (string, bool) {
+			switch key {
+			case "Idempotency-Key", "Traceparent", "Tracestate":
+				return "grpcgateway-" + key, true
+			default:
+				return runtime.DefaultHeaderMatcher(key)
+			}
+		}),
+	)
 	if err := ledgerv1.RegisterLedgerServiceHandlerServer(context.Background(), gateway, config.Server); err != nil {
 		return nil, err
 	}

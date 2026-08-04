@@ -151,4 +151,5 @@ full-validation: check-go-version
 
 load-test:
 	@echo "Running K6 load tests..."
-	k6 run test/k6/load.js
+	@mkdir -p evidence/reports
+	k6 run --summary-export=evidence/reports/load-test-summary.json test/k6/load.js

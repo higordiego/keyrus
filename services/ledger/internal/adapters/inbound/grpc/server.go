@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	ledgerv1 "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/public/v1"
@@ -48,6 +49,7 @@ func (s *Server) CreateEntry(ctx context.Context, req *ledgerv1.CreateEntryReque
 
 	var idempotencyKey, timezone, traceparent string
 	md, _ := metadata.FromIncomingContext(ctx)
+	slog.Info("CreateEntry metadata", "md", md)
 	if vals := md.Get("grpcgateway-idempotency-key"); len(vals) > 0 {
 		idempotencyKey = vals[0]
 	}
@@ -66,7 +68,7 @@ func (s *Server) CreateEntry(ctx context.Context, req *ledgerv1.CreateEntryReque
 	result, err := s.app.CreateEntry(ctx, application.CreateEntryInput{
 		MerchantID:     identity.MerchantID,
 		IdempotencyKey: idempotencyKey,
-		Type:           string(req.GetType()),
+		Type:           strings.TrimPrefix(strings.ToLower(req.GetType().String()), "entry_type_"),
 		AmountMinor:    money.AmountMinor(),
 		Currency:       req.GetCurrency(),
 		BusinessDate:   ptr(req.GetBusinessDate()),
@@ -75,6 +77,7 @@ func (s *Server) CreateEntry(ctx context.Context, req *ledgerv1.CreateEntryReque
 		Traceparent:    traceparent,
 	})
 	if err != nil {
+		slog.Error("CreateEntry failed", "error", err)
 		return nil, mapError(err)
 	}
 
