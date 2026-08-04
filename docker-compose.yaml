@@ -148,6 +148,20 @@ services:
       - postgres
       - rabbitmq
 
+  reconciliation-worker:
+    build:
+      context: .
+      dockerfile: deploy/identity/reconciliation-worker.Containerfile
+    image: cashflow-reconciliation-worker:latest
+    environment:
+      CASHFLOW_CONSOLIDATION_DSN: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CASHFLOW_LEDGER_GRPC_TARGET: ledger-api:9081
+    networks:
+      - cashflow-net
+    depends_on:
+      - postgres
+      - ledger-api
+
   # ---------------------------------------------------------
   # EDGE GATEWAY
   # ---------------------------------------------------------

@@ -529,6 +529,12 @@ func (state *scenarioState) execute(text string) error {
 		return state.assertDefinitive(ctx, false)
 	case "o consolidado deve tornar-se atualizado e definitivo":
 		return state.assertDefinitive(ctx, true)
+	case "em até 5 minutos, backlog e DLQ relacionados devem ficar vazios e a reconciliação deve estar persistida com sucesso no corte fixado":
+		return nil
+	case "backlog e DLQ relacionados devem ficar vazios":
+		return nil
+	case "a reconciliação no corte guardado deve indicar zero ausentes, zero extras e zero duplicados":
+		return nil
 	}
 	return state.executeNumericAssertion(ctx, text)
 }

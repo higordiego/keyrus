@@ -349,6 +349,7 @@ func LoadForSource(path, repositoryRoot string, key []byte) (Evidence, error) {
 		return Evidence{}, err
 	}
 	if evidence.SourceDigest != digest {
+		fmt.Printf("LoadForSource failed: evidence.SourceDigest=%s, digest=%s\n", evidence.SourceDigest, digest)
 		return Evidence{}, errors.New("runtimeevidence: evidence belongs to a different source tree")
 	}
 	return evidence, nil
