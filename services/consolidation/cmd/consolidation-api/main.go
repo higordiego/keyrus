@@ -152,7 +152,12 @@ func run(logger *slog.Logger) error {
 	var ready atomic.Bool
 	publicServer := runtimeobs.HTTPServer(handler)
 	managementServer := &http.Server{
-		Handler:           runtimeobs.ManagementHandler("consolidation-api", ready.Load, metrics),
+		Handler: runtimeobs.ManagementHandler("consolidation-api", func(ctx context.Context) error {
+			if !ready.Load() {
+				return errors.New("not ready")
+			}
+			return store.Ready(ctx)
+		}, metrics),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      5 * time.Second,

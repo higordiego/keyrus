@@ -15,6 +15,7 @@ type WatermarkClient interface {
 }
 
 type QueryStore interface {
+	Ready(ctx context.Context) error
 	Balances(ctx context.Context, merchantID string, from, through time.Time) ([]domain.DailyBalance, error)
 	Progress(ctx context.Context, merchantID string) (domain.MerchantProgress, error)
 	HasPendingRecompute(ctx context.Context, merchantID string) (bool, error)
