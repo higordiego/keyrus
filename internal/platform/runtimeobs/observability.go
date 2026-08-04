@@ -162,14 +162,16 @@ func Middleware(service string, metrics *Metrics, logger *slog.Logger, next http
 }
 
 // ManagementHandler keeps health and metrics off the public adapter listener.
-func ManagementHandler(service string, ready func() bool, metrics *Metrics) http.Handler {
+func ManagementHandler(service string, ready func(context.Context) error, metrics *Metrics) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("GET /health/ready", func(writer http.ResponseWriter, _ *http.Request) {
-		if !ready() {
-			http.Error(writer, "not ready", http.StatusServiceUnavailable)
+	mux.HandleFunc("GET /health/ready", func(writer http.ResponseWriter, request *http.Request) {
+		ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+		defer cancel()
+		if err := ready(ctx); err != nil {
+			http.Error(writer, "Service Unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		writer.WriteHeader(http.StatusNoContent)
