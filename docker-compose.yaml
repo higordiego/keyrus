@@ -5,7 +5,7 @@ services:
   # INFRASTRUCTURE
   # ---------------------------------------------------------
   postgres:
-    image: postgres:15-alpine
+    image: postgres:17.6-alpine
     environment:
       POSTGRES_USER: cashflow
       POSTGRES_PASSWORD: ${CASHFLOW_DB_PASSWORD:-secret}
@@ -18,7 +18,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   rabbitmq:
-    image: rabbitmq:3-management-alpine
+    image: rabbitmq@sha256:d7af1c87c5f1eda13fcfca06db452bf3aeab6619fc3358b68535c0c02c4e52bc
     environment:
       RABBITMQ_DEFAULT_USER: cashflow
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-secret}
@@ -31,7 +31,7 @@ services:
       - rabbitmq-data:/var/lib/rabbitmq
 
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0.0
+    image: quay.io/keycloak/keycloak:26.3.3
     command: start --optimized --import-realm --http-enabled=false --https-port=8443 --https-certificate-file=/etc/cashflow/keycloak.crt --https-certificate-key-file=/etc/cashflow/keycloak.key
     environment:
       KC_DB: postgres
@@ -136,6 +136,7 @@ services:
 networks:
   cashflow-net:
     driver: overlay
+    attachable: true
 
 volumes:
   postgres-data:

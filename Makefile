@@ -19,7 +19,7 @@ TRIVY_VERSION := v0.72.0
 
 export PATH := $(TOOLS_BIN):$(PATH)
 
-.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports
+.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports load-test
 
 all: ci
 
@@ -124,3 +124,7 @@ build-validation: check-go-version
 
 full-validation: check-go-version
 	./scripts/run-gate.sh full full-validation ./scripts/full-validation-gate.sh
+
+load-test:
+	@echo "Running K6 load tests..."
+	k6 run test/k6/load.js
