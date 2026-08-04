@@ -1089,6 +1089,7 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 			Context: repositoryRoot, Dockerfile: "deploy/identity/keycloak.Containerfile",
 			Repo: "cashflow-keycloak-t02-e2e", Tag: "local", KeepImage: true,
 		},
+
 		ExposedPorts:   []string{"8443/tcp"},
 		Networks:       []string{nw.Name},
 		NetworkAliases: map[string][]string{nw.Name: {"keycloak"}},
@@ -1107,6 +1108,7 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 			containerFile(pki.Keycloak.CertFile, "/etc/cashflow/keycloak.crt", 0o644),
 			containerFile(pki.Keycloak.KeyFile, "/etc/cashflow/keycloak.key", 0o644),
 		},
+
 		WaitingFor: wait.ForHTTP("/realms/cashflow/.well-known/openid-configuration").WithPort("8443/tcp").
 			WithTLS(true, &tls.Config{InsecureSkipVerify: true}).WithStartupTimeout(12 * time.Minute), //nolint:gosec -- ephemeral test CA
 	})
