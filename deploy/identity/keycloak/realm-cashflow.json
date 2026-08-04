@@ -211,7 +211,7 @@
       "serviceAccountsEnabled": true,
       "protocol": "openid-connect",
       "secret": "${CASHFLOW_CONSOLIDATION_CLIENT_SECRET}",
-      "defaultClientScopes": ["basic", "internal-api-audience", "ledger:internal:read"],
+      "defaultClientScopes": ["basic", "internal-api-audience", "public-api-audience", "ledger:internal:read", "ledger:write", "ledger:read", "consolidation:read"],
       "optionalClientScopes": []
     },
     {
