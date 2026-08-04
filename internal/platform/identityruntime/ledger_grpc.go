@@ -21,15 +21,18 @@ type LedgerGRPCConfig struct {
 	Tenants        grpcsecurity.TenantAuthorizer
 	TLS            *tls.Config
 	Logger         *slog.Logger
-	SourcePosition uint64
+	Handler        ledgerrpc.Handler
 	MaxDeadline    time.Duration
 	MaxRecvBytes   int
 	MaxSendBytes   int
 }
 
+// NewLedgerGRPCServer constructs a TLS-secured gRPC server bounded by the
+// identity framework requirements. The server asserts that the caller has
+// the appropriate tenant delegations and drops excessively generous deadlines.
 func NewLedgerGRPCServer(config LedgerGRPCConfig) (*grpc.Server, error) {
-	if config.Verifier == nil || config.Tenants == nil || config.TLS == nil || config.Logger == nil {
-		return nil, errors.New("identityruntime: gRPC verifier, tenant policy, TLS and logger are required")
+	if config.Verifier == nil || config.Tenants == nil || config.TLS == nil || config.Logger == nil || config.Handler == nil {
+		return nil, errors.New("identityruntime: gRPC verifier, tenant policy, TLS, logger and handler are required")
 	}
 	options, err := grpcsecurity.ServerOptions(grpcsecurity.ServerConfig{
 		Verifier:        config.Verifier,
@@ -47,7 +50,7 @@ func NewLedgerGRPCServer(config LedgerGRPCConfig) (*grpc.Server, error) {
 	}
 	options = append(options, grpc.Creds(credentials.NewTLS(config.TLS)))
 	server := grpc.NewServer(options...)
-	ledgerrpc.RegisterServer(server, ledgerInternalAuthority{sourcePosition: config.SourcePosition})
+	ledgerrpc.RegisterServer(server, config.Handler)
 	healthServer := health.NewServer()
 	healthv1.RegisterHealthServer(server, healthServer)
 	healthServer.SetServingStatus("", healthv1.HealthCheckResponse_SERVING)
@@ -57,6 +60,10 @@ func NewLedgerGRPCServer(config LedgerGRPCConfig) (*grpc.Server, error) {
 
 type ledgerInternalAuthority struct {
 	sourcePosition uint64
+}
+
+func NewMockInternalHandler(sourcePosition uint64) ledgerrpc.Handler {
+	return ledgerInternalAuthority{sourcePosition: sourcePosition}
 }
 
 func (a ledgerInternalAuthority) GetMerchantWatermark(_ context.Context, _ string) (uint64, time.Time, error) {
