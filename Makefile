@@ -21,6 +21,30 @@ export PATH := $(TOOLS_BIN):$(PATH)
 
 .PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports load-test
 
+.DEFAULT_GOAL := help
+
+.PHONY: help
+help:
+	@echo "========================================"
+	@echo "       Keyrus Makefile Help             "
+	@echo "========================================"
+	@echo "Comandos de Teste e Validação:"
+	@echo "  make test          - Roda a suíte de testes unitários rápidos"
+	@echo "  make integration   - Sobe infra básica e roda testes de integração"
+	@echo "  make bdd           - Roda os testes comportamentais (Godog/Cucumber)"
+	@echo "  make load-test     - Roda testes de carga/stress (K6)"
+	@echo "  make ci            - Roda o fluxo completo de CI (format, lint, build, testes)"
+	@echo ""
+	@echo "Comandos de Construção e Código:"
+	@echo "  make format        - Padroniza o código-fonte (gofmt)"
+	@echo "  make build         - Compila todos os serviços do Go"
+	@echo "  make generate      - Executa os geradores de código (buf/protobuf)"
+	@echo "  make lint          - Inspeciona o código (go vet, actionlint, etc)"
+	@echo ""
+	@echo "Comandos de Segurança:"
+	@echo "  make security      - Roda verificações de vazamento e vulnerabilidades"
+	@echo "========================================"
+
 all: ci
 
 bootstrap: check-go-version tools deps generate
