@@ -62,5 +62,5 @@ Depois da execução, o relatório deve listar a tag. A ausência da tag na evid
 | Integração/Testcontainers | Keycloak, KrakenD, imagens finais Ledger/Consolidation, Collector e fault backend do T02 |
 | Falha, outbox, DLQ e reconciliação | Ausente |
 | Testes multi-tenant executados | T02 cobre identidade, isolamento e anti-enumeração; regras financeiras permanecem fora |
-| Script e relatório k6 | Ausente |
+| Script e relatório k6 | Script `test/k6/load.js` implementado. Primeiro run capturou ~76 req/s totais; checks de sucesso (200) atingiram 47%, enquanto 53% falharam com 429 Too Many Requests no Edge (rate limit por IP). |
 | Traces, métricas e alertas de aceite | T02 cobre correlação HTTP→gRPC, redaction e sanitização; alertas permanecem futuros |
