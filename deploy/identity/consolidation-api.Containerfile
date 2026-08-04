@@ -4,11 +4,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd ./cmd
+COPY services ./services
 COPY internal ./internal
 COPY gen ./gen
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/consolidation-api ./cmd/consolidation-api
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/consolidation-api ./services/consolidation/cmd/consolidation-api
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates \
