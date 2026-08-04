@@ -34,7 +34,7 @@ make full-validation   # ci + policy + security (Gitleaks/Govulncheck/Trivy) + b
 make reports           # consolida evidências em evidence/reports/
 ```
 
-Os testes de integração/E2E (`make ci`, pacotes `test/integration`, `services/*/internal/**/*_integration_test.go`) sobem PostgreSQL, RabbitMQ, Keycloak e KrakenD reais via Testcontainers a cada execução, sem depender de nenhum serviço externo já provisionado. Uma stack local single-command (Docker Compose) é entregável do ticket de Compose/Swarm e ainda está em andamento; até lá, a forma de ver o sistema rodando de ponta a ponta é pela suíte de testes real acima.
+Os testes de integração/E2E (`make ci`, pacotes `test/integration`, `services/*/internal/**/*_integration_test.go`) sobem PostgreSQL, RabbitMQ, Keycloak e KrakenD reais via Testcontainers a cada execução, sem depender de nenhum serviço externo já provisionado. Para rodar a stack completa localmente via Docker Compose, primeiro rode `go run scripts/generate-compose-secrets.go` para gerar certificados e segredos, e então suba com `docker compose up -d`.
 
 ## Estrutura do repositório
 
