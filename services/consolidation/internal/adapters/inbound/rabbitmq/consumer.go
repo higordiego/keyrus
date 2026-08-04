@@ -464,8 +464,8 @@ func mustMarshalEvent(event domain.EntryConfirmed) []byte {
 		"merchant_id": event.MerchantID, "merchant_position": event.MerchantPosition,
 		"entry_id": event.EntryID, "entry_type": event.EntryType,
 		"amount_minor": event.AmountMinor, "currency": event.Currency,
-		"business_date": event.BusinessDate.Format(domain.DateLayout),
-		"confirmed_at":  event.ConfirmedAt.UTC().Format(time.RFC3339Nano),
+		"business_date":     event.BusinessDate.Format(domain.DateLayout),
+		"confirmed_at":      event.ConfirmedAt.UTC().Format(time.RFC3339Nano),
 		"original_entry_id": event.OriginalEntryID, "traceparent": event.Traceparent,
 	})
 	if err != nil {

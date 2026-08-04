@@ -40,4 +40,3 @@ func NewConsolidationHTTPHandler(config ConsolidationHTTPConfig) (http.Handler, 
 	mux.Handle("GET /v1/daily-balances", guard(runtimeobs.Middleware("consolidation-api", config.Metrics, config.Logger, gateway)))
 	return mux, nil
 }
-

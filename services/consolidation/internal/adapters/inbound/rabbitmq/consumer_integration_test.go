@@ -169,7 +169,7 @@ func testEvent(merchant string, position int64, entryType string, amountMinor in
 		MerchantID: merchant, MerchantPosition: position,
 		EntryID: syntheticEntryID(merchant, position), EntryType: entryType,
 		AmountMinor: amountMinor, Currency: domain.CurrencyBRL, BusinessDate: date,
-		ConfirmedAt: time.Date(2026, 8, 1, 15, 0, 0, 0, time.UTC),
+		ConfirmedAt:     time.Date(2026, 8, 1, 15, 0, 0, 0, time.UTC),
 		OriginalEntryID: original, Traceparent: testTrace,
 	}
 }

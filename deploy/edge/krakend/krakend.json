@@ -64,7 +64,7 @@
       "method": "POST",
       "output_encoding": "no-op",
       "timeout": "3s",
-      "input_headers": ["Authorization", "Idempotency-Key", "traceparent", "tracestate", "Content-Type", "Accept"],
+      "input_headers": ["Authorization", "Idempotency-Key", "idempotency-key", "traceparent", "tracestate", "Content-Type", "Accept"],
       "input_query_strings": [],
       "extra_config": {
         "auth/validator": {
@@ -106,7 +106,7 @@
       "method": "POST",
       "output_encoding": "no-op",
       "timeout": "3s",
-      "input_headers": ["Authorization", "Idempotency-Key", "traceparent", "tracestate", "Content-Type", "Accept"],
+      "input_headers": ["Authorization", "Idempotency-Key", "idempotency-key", "traceparent", "tracestate", "Content-Type", "Accept"],
       "input_query_strings": [],
       "extra_config": {
         "auth/validator": {
