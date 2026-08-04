@@ -1,0 +1,204 @@
+version: "3.8"
+
+services:
+  kraken-gateway:
+    image: cashflow-krakend:latest
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        delay: 10s
+      placement:
+        constraints:
+          - node.role == worker
+    ports:
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: ingress
+    networks:
+      - edge-net
+    configs:
+      - source: krakend_config
+        target: /etc/krakend/krakend.json
+    secrets:
+      - source: edge_ca_pem
+        target: /etc/cashflow/ca.pem
+    environment:
+      SSL_CERT_FILE: /etc/cashflow/ca.pem
+      FC_ENABLE: 1
+
+  keycloak:
+    image: cashflow-keycloak:latest
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        order: start-first
+      placement:
+        constraints:
+          - node.role == worker
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: "jdbc:postgresql://postgres-external:5432/keycloak"
+      KC_DB_USERNAME_FILE: /run/secrets/kc_db_user
+      KC_DB_PASSWORD_FILE: /run/secrets/kc_db_pass
+      KC_PROXY_HEADERS: forwarded
+      JGROUPS_DISCOVERY_PROTOCOL: JDBC_PING
+      JGROUPS_DISCOVERY_PROPERTIES: "datasource_jndi_name=java:jboss/datasources/KeycloakDS"
+    secrets:
+      - kc_db_user
+      - kc_db_pass
+    networks:
+      - edge-net
+      - identity-net
+
+  ledger-api:
+    image: cashflow-ledger-api:latest
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        order: start-first
+      placement:
+        constraints:
+          - node.role == worker
+    environment:
+      CASHFLOW_DB_URL_FILE: /run/secrets/ledger_db_url
+      CASHFLOW_OIDC_ISSUER: https://edge.cashflow.local/realms/cashflow
+      CASHFLOW_OIDC_JWKS_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/certs
+      CASHFLOW_OTLP_ENDPOINT: otel-collector:4317
+    secrets:
+      - ledger_db_url
+      - ledger_tls_cert
+      - ledger_tls_key
+      - edge_ca_pem
+    networks:
+      - edge-net
+      - data-net
+      - obs-net
+
+  outbox-publisher:
+    image: cashflow-outbox-publisher:latest
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+      placement:
+        constraints:
+          - node.role == worker
+    environment:
+      OUTBOX_POSTGRES_DSN_FILE: /run/secrets/ledger_db_url
+      OUTBOX_RABBITMQ_URL_FILE: /run/secrets/mq_url
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+    secrets:
+      - ledger_db_url
+      - mq_url
+    networks:
+      - data-net
+      - obs-net
+
+  consolidation-api:
+    image: cashflow-consolidation-api:latest
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        order: start-first
+    environment:
+      CASHFLOW_DB_URL_FILE: /run/secrets/consolidation_db_url
+      CASHFLOW_LEDGER_GRPC_TARGET: ledger-api:9081
+      CASHFLOW_OIDC_ISSUER: https://edge.cashflow.local/realms/cashflow
+      CASHFLOW_OTLP_ENDPOINT: otel-collector:4317
+    secrets:
+      - consolidation_db_url
+      - consolidation_client_secret
+      - edge_ca_pem
+    networks:
+      - edge-net
+      - data-net
+      - obs-net
+
+  consolidation-consumer:
+    image: cashflow-consolidation-consumer:latest
+    deploy:
+      replicas: 2
+    environment:
+      CONSOLIDATION_DATABASE_URL_FILE: /run/secrets/consolidation_db_url
+      CONSUMER_RABBITMQ_URL_FILE: /run/secrets/mq_url
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+    secrets:
+      - consolidation_db_url
+      - mq_url
+    networks:
+      - data-net
+      - obs-net
+
+  reconciliation-worker:
+    image: cashflow-reconciliation-worker:latest
+    deploy:
+      replicas: 1 # Only one active reconciling window
+    environment:
+      CASHFLOW_CONSOLIDATION_DSN_FILE: /run/secrets/consolidation_db_url
+      CASHFLOW_LEDGER_GRPC_TARGET: ledger-api:9081
+    secrets:
+      - consolidation_db_url
+      - edge_ca_pem
+    networks:
+      - data-net
+      - obs-net
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.135.0
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    configs:
+      - source: otel_config
+        target: /etc/otelcol/config.yaml
+    networks:
+      - obs-net
+
+networks:
+  edge-net:
+    driver: overlay
+    attachable: false
+  identity-net:
+    driver: overlay
+    attachable: false
+  data-net:
+    driver: overlay
+    attachable: false
+  obs-net:
+    driver: overlay
+    attachable: false
+
+configs:
+  krakend_config:
+    external: true
+  otel_config:
+    external: true
+
+secrets:
+  edge_ca_pem:
+    external: true
+  kc_db_user:
+    external: true
+  kc_db_pass:
+    external: true
+  ledger_db_url:
+    external: true
+  consolidation_db_url:
+    external: true
+  ledger_tls_cert:
+    external: true
+  ledger_tls_key:
+    external: true
+  consolidation_client_secret:
+    external: true
+  mq_url:
+    external: true
