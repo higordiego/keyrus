@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/adapters/outbound/postgres"
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/application"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/exaring/otelpgx"
 )
 
 func main() {
@@ -106,7 +108,12 @@ func run(logger *slog.Logger) error {
 	if dbURI == "" {
 		store = &application.MockQueryStore{}
 	} else {
-		pool, err := pgxpool.New(context.Background(), dbURI)
+		poolConfig, err := pgxpool.ParseConfig(dbURI)
+		if err != nil {
+			return fmt.Errorf("pgxpool.ParseConfig: %w", err)
+		}
+		poolConfig.ConnConfig.Tracer = otelpgx.NewTracer()
+		pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 		if err != nil {
 			return err
 		}
