@@ -74,7 +74,7 @@ services:
       dockerfile: deploy/identity/ledger-api.Containerfile
     image: cashflow-ledger-api:latest
     environment:
-      CASHFLOW_DB_URL: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CASHFLOW_DB_URL: postgres://ledger_app:ledger_secret@postgres:5432/cashflow?sslmode=disable
       CASHFLOW_OIDC_ISSUER: https://edge.cashflow.local/realms/cashflow
       CASHFLOW_OIDC_JWKS_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/certs
       CASHFLOW_OIDC_CA_FILE: /etc/cashflow/ca.pem
@@ -98,7 +98,7 @@ services:
       dockerfile: deploy/identity/consolidation-api.Containerfile
     image: cashflow-consolidation-api:latest
     environment:
-      CASHFLOW_DB_URL: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CASHFLOW_DB_URL: postgres://consolidation_app:consolidation_secret@postgres:5432/cashflow?sslmode=disable
       CASHFLOW_OIDC_ISSUER: https://edge.cashflow.local/realms/cashflow
       CASHFLOW_OIDC_JWKS_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/certs
       CASHFLOW_OIDC_TOKEN_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/token
@@ -126,7 +126,7 @@ services:
       dockerfile: deploy/identity/outbox-publisher.Containerfile
     image: cashflow-outbox-publisher:latest
     environment:
-      OUTBOX_POSTGRES_DSN: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      OUTBOX_POSTGRES_DSN: postgres://ledger_app:ledger_secret@postgres:5432/cashflow?sslmode=disable
       OUTBOX_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     networks:
       - cashflow-net
@@ -140,7 +140,7 @@ services:
       dockerfile: deploy/identity/consolidation-consumer.Containerfile
     image: cashflow-consolidation-consumer:latest
     environment:
-      CONSOLIDATION_DATABASE_URL: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CONSOLIDATION_DATABASE_URL: postgres://consolidation_app:consolidation_secret@postgres:5432/cashflow?sslmode=disable
       CONSUMER_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     networks:
       - cashflow-net
@@ -154,7 +154,7 @@ services:
       dockerfile: deploy/identity/reconciliation-worker.Containerfile
     image: cashflow-reconciliation-worker:latest
     environment:
-      CASHFLOW_CONSOLIDATION_DSN: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+      CASHFLOW_CONSOLIDATION_DSN: postgres://consolidation_app:consolidation_secret@postgres:5432/cashflow?sslmode=disable
       CASHFLOW_OIDC_TOKEN_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/token
       CASHFLOW_OIDC_CA_FILE: /etc/cashflow/ca.pem
       CASHFLOW_SERVICE_CLIENT_SECRET_FILE: /run/secrets/reconciliation-client-secret
