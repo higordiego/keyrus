@@ -127,7 +127,12 @@ func run(logger *slog.Logger) error {
 	defer managementListener.Close()
 
 	managementServer := &http.Server{
-		Handler:           runtimeobs.ManagementHandler("reconciliation-worker", ready.Load, metrics),
+		Handler: runtimeobs.ManagementHandler("reconciliation-worker", func(ctx context.Context) error {
+			if !ready.Load() {
+				return errors.New("not ready")
+			}
+			return nil // DB is checked continuously by worker
+		}, metrics),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      5 * time.Second,

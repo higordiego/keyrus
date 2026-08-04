@@ -9,6 +9,10 @@ import (
 
 type MockQueryStore struct{}
 
+func (m *MockQueryStore) Ready(ctx context.Context) error {
+	return nil
+}
+
 func (m *MockQueryStore) Balances(ctx context.Context, merchantID string, from, to time.Time) ([]domain.DailyBalance, error) {
 	return nil, nil
 }
