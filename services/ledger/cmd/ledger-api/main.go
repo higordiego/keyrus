@@ -31,7 +31,7 @@ import (
 func main() {
 	logger := slog.New(redact.NewHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(logger); err != nil {
-		logger.Error("ledger-api stopped", slog.String("error_class", runtimeobs.ErrorClass(err)))
+		logger.Error("ledger-api stopped", slog.String("error", err.Error()), slog.String("error_class", runtimeobs.ErrorClass(err)))
 		os.Exit(1)
 	}
 }
@@ -39,7 +39,7 @@ func main() {
 func run(logger *slog.Logger) error {
 	tracerProvider, err := runtimeobs.NewTracerProvider(context.Background(), "ledger-api", required("CASHFLOW_OTLP_ENDPOINT"))
 	if err != nil {
-		return err
+		return fmt.Errorf("NewTracerProvider: %w", err)
 	}
 	defer shutdownTracing(tracerProvider.Shutdown)
 	issuer := required("CASHFLOW_OIDC_ISSUER")
@@ -47,32 +47,32 @@ func run(logger *slog.Logger) error {
 	caFile := required("CASHFLOW_OIDC_CA_FILE")
 	publicVerifier, err := identityruntime.Verifier(issuer, value("CASHFLOW_PUBLIC_AUDIENCE", "cashflow-public-api"), jwksURL, caFile, auth.MerchantRequired)
 	if err != nil {
-		return err
+		return fmt.Errorf("public Verifier: %w", err)
 	}
 	internalVerifier, err := identityruntime.Verifier(issuer, value("CASHFLOW_INTERNAL_AUDIENCE", "cashflow-internal-api"), jwksURL, caFile, auth.MerchantForbidden)
 	if err != nil {
-		return err
+		return fmt.Errorf("internal Verifier: %w", err)
 	}
 	var inboundServer ledgerv1.LedgerServiceServer
 	if fixture := os.Getenv("CASHFLOW_IDENTITY_FIXTURE_OWNERS"); fixture != "" {
 		owners, err := identityruntime.ParseOwners(fixture)
 		if err != nil {
-			return err
+			return fmt.Errorf("ParseOwners: %w", err)
 		}
 		inboundServer = identityruntime.NewMockLedgerServer(owners)
 	} else {
 		pool, err := pgxpool.New(context.Background(), required("CASHFLOW_DB_URL"))
 		if err != nil {
-			return err
+			return fmt.Errorf("pgxpool.New: %w", err)
 		}
 		defer pool.Close()
 		store, err := postgres.New(pool)
 		if err != nil {
-			return err
+			return fmt.Errorf("postgres.New: %w", err)
 		}
 		cursorCodec, err := application.NewCursorCodec([]byte(required("CASHFLOW_CURSOR_SECRET")))
 		if err != nil {
-			return err
+			return fmt.Errorf("NewCursorCodec: %w", err)
 		}
 		app, err := application.NewService(application.Dependencies{
 			UnitOfWork: store,
@@ -80,21 +80,21 @@ func run(logger *slog.Logger) error {
 			Cursors:    cursorCodec,
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("NewService: %w", err)
 		}
 		inboundServer = inboundgrpc.NewServer(app)
 	}
 	delegations, err := identityruntime.ParseAssignments(required("CASHFLOW_SERVICE_TENANT_DELEGATIONS"))
 	if err != nil {
-		return err
+		return fmt.Errorf("ParseAssignments: %w", err)
 	}
 	position, err := identityruntime.ParseUint64(os.Getenv("CASHFLOW_SOURCE_POSITION"), 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("ParseUint64: %w", err)
 	}
 	grpcMaxDeadline, err := identityruntime.ParseDuration(os.Getenv("CASHFLOW_GRPC_MAX_DEADLINE"), 5*time.Second)
 	if err != nil {
-		return err
+		return fmt.Errorf("ParseDuration: %w", err)
 	}
 
 	metrics := &runtimeobs.Metrics{}
