@@ -91,6 +91,7 @@ type StoredEntry struct {
 
 type EntryReader interface {
 	GetEntry(context.Context, domain.ID, domain.ID) (StoredEntry, error)
+	OwnerOf(context.Context, domain.ID) (domain.ID, error)
 	ListEntries(context.Context, domain.ID, ListFilter, int, ListScope) (StoredPage, error)
 	SourcePosition(context.Context, domain.ID) (int64, error)
 }

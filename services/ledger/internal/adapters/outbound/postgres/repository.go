@@ -199,6 +199,18 @@ WHERE entry.merchant_id = $1 AND entry.id = $2`, merchantID.String(), entryID.St
 	return entry, nil
 }
 
+func (r *Repository) OwnerOf(ctx context.Context, entryID domain.ID) (domain.ID, error) {
+	var merchantID string
+	err := r.pool.QueryRow(ctx, `SELECT merchant_id FROM ledger.ledger_entry WHERE id = $1`, entryID.String()).Scan(&merchantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", application.ErrEntryNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get ledger entry owner: %w", err)
+	}
+	return domain.ID(merchantID), nil
+}
+
 func (r *Repository) ListEntries(
 	ctx context.Context,
 	merchantID domain.ID,

@@ -31,14 +31,14 @@ func NewServer(app *application.Service) *Server {
 
 // OwnerOf resolves the merchant owner of a ledger entry for tenancy guards.
 func (s *Server) OwnerOf(ctx context.Context, resourceID string) (string, bool, error) {
-	entry, err := s.app.GetEntry(ctx, "", resourceID)
+	merchantID, err := s.app.OwnerOf(ctx, resourceID)
 	if err != nil {
 		if errors.Is(err, application.ErrEntryNotFound) {
 			return "", false, nil
 		}
 		return "", false, err
 	}
-	return entry.MerchantID, true, nil
+	return merchantID, true, nil
 }
 
 func (s *Server) CreateEntry(ctx context.Context, req *ledgerv1.CreateEntryRequest) (*ledgerv1.CreateEntryResponse, error) {

@@ -305,6 +305,18 @@ func (s *Service) GetEntry(ctx context.Context, merchantIDText, entryIDText stri
 	return resultFromStored(entry), nil
 }
 
+func (s *Service) OwnerOf(ctx context.Context, entryIDText string) (string, error) {
+	entryID, err := domain.ParseID(entryIDText)
+	if err != nil {
+		return "", err
+	}
+	ownerID, err := s.reader.OwnerOf(ctx, entryID)
+	if err != nil {
+		return "", err
+	}
+	return ownerID.String(), nil
+}
+
 func (s *Service) SourcePosition(ctx context.Context, merchantIDText string) (int64, error) {
 	merchantID, err := parseMerchant(merchantIDText)
 	if err != nil {
