@@ -32,7 +32,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.3.3
-    command: start --optimized --import-realm --http-enabled=false --https-port=8443 --https-certificate-file=/etc/cashflow/keycloak.crt --https-certificate-key-file=/etc/cashflow/keycloak.key
+    command: start --import-realm --http-enabled=false --https-port=8443 --https-certificate-file=/etc/cashflow/keycloak.crt --https-certificate-key-file=/etc/cashflow/keycloak.key --hostname-strict=false
     environment:
       KC_DB: postgres
       KC_DB_URL_HOST: postgres
@@ -70,11 +70,11 @@ services:
       CASHFLOW_OIDC_ISSUER: https://keycloak:8443/realms/cashflow
       CASHFLOW_OIDC_JWKS_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/certs
       CASHFLOW_OIDC_CA_FILE: /etc/cashflow/ca.pem
-      CASHFLOW_GRPC_TLS_CERT_FILE: /etc/cashflow/ledger.crt
-      CASHFLOW_GRPC_TLS_KEY_FILE: /etc/cashflow/ledger.key
+      CASHFLOW_GRPC_TLS_CERT_FILE: /etc/cashflow/ledger-api.crt
+      CASHFLOW_GRPC_TLS_KEY_FILE: /etc/cashflow/ledger-api.key
       CASHFLOW_GRPC_CLIENT_CA_FILE: /etc/cashflow/ca.pem
       CASHFLOW_SERVICE_TENANT_DELEGATIONS: "cashflow-consolidation-svc=merchant-a"
-      CASHFLOW_CURSOR_SECRET: "my-secret-cursor-key"
+      CASHFLOW_CURSOR_SECRET: "0123456789abcdef0123456789abcdef"
       CASHFLOW_OTLP_ENDPOINT: otel-collector:4317
     networks:
       - cashflow-net
