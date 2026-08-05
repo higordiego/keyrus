@@ -114,7 +114,7 @@ export function setup() {
         });
         
         if (seedRes.status === 200 || seedRes.status === 201) {
-            entryId = seedRes.json('entry.entry_id') || seedRes.json('entry_id');
+            entryId = seedRes.json('entry.entryId') || seedRes.json('entryId');
         }
         
         // Aguarda um pouco para o consumidor processar
@@ -164,7 +164,7 @@ export function readBalances(data) {
     };
 
     const today = new Date().toISOString().split('T')[0];
-    let readRes = http.get(`${BASE_URL}/v1/daily-balances?date=${today}`, readParams);
+    let readRes = http.get(`${BASE_URL}/v1/daily-balances?start_date=${today}&end_date=${today}`, readParams);
     check(readRes, {
         'read status is 200': (r) => r.status === 200,
     });
@@ -181,7 +181,7 @@ export function listEntries(data) {
         },
     };
 
-    let listRes = http.get(`${BASE_URL}/v1/entries?limit=10`, readParams);
+    let listRes = http.get(`${BASE_URL}/v1/entries?page_size=10`, readParams);
     check(listRes, {
         'list status is 200': (r) => r.status === 200,
     });
@@ -189,7 +189,7 @@ export function listEntries(data) {
 }
 
 export function getEntry(data) {
-    if (!data.entryId) return;
+    if (!data.entryId) { sleep(1); return; }
     
     const readParams = {
         headers: {
@@ -208,7 +208,7 @@ export function getEntry(data) {
 }
 
 export function reverseEntry(data) {
-    if (!data.entryId) return;
+    if (!data.entryId) { sleep(1); return; }
     
     const idempotencyKey = generateUUID();
     const writeParams = {
