@@ -187,7 +187,6 @@ Para se aprofundar nas decisões arquiteturais e nas evidências do sistema, con
 
 | Documento | Descrição |
 | --- | --- |
-| [Matriz de Conformidade](docs/compliance-matrix.md) | Mapeamento dos requisitos do desafio e o estado real de cada item. |
 | [Arquitetura Alvo](docs/arquitetura-alvo.md) | Visão completa da arquitetura do sistema e diagramas de fluxo. |
 | [Arquitetura de Transição](docs/arquitetura-de-transicao.md) | Planejamento da evolução do sistema legado até a arquitetura alvo. |
 | [Defesa Arquitetural](docs/defesa-arquitetural.md) | Justificativas técnicas das escolhas de design e tecnologias adotadas. |
