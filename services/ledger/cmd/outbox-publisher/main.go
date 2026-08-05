@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	apievents "github.com/higordiegoti/keyrus/api/events"
 	"github.com/higordiegoti/keyrus/internal/platform/observability/redact"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/outbox"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/exaring/otelpgx"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"

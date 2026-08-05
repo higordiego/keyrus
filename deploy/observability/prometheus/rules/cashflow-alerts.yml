@@ -1,0 +1,171 @@
+# Actionable alerts for the 9 conditions listed in the technical plan
+# ("Alertas acionáveis", deployment-security-operations). Every alert below
+# carries, in its annotations: what it measures (summary), the threshold
+# (expr/for), the impact, the safe action, and the objective condition that
+# closes it -- the plan requires all five, not just the threshold.
+#
+# Each alert's runbook_url annotation points at the matching file in
+# docs/runbooks/. Grafana and Alertmanager (once configured) both render
+# `annotations.runbook_url` as a clickable link automatically.
+#
+# Every expr below reads a metric that is genuinely scraped today (see
+# ../prometheus.yml) -- nothing here references a metric that does not
+# exist yet. Alert 9 (disk/connections/memory) is the one condition from the
+# plan's list that is NOT implemented: it needs node_exporter/cAdvisor for
+# disk and memory, and a dedicated read-only monitoring role plus
+# postgres_exporter for connections, none of which are deployed. Wiring a
+# monitoring role in without going through the same least-privilege review
+# the ledger_app/consolidation_app roles got (T10) would undercut that work,
+# so it is left as a documented gap instead of a rule that always evaluates
+# to "no data" while looking implemented.
+groups:
+  - name: cashflow-recovery-and-integrity
+    rules:
+      - alert: OutboxOldestPendingTooOld
+        expr: outbox_oldest_age_seconds > 30
+        for: 0s
+        labels:
+          severity: warning
+          component: ledger-outbox-publisher
+        annotations:
+          summary: "Oldest pending Ledger outbox event is older than 30s (currently {{ $value | humanizeDuration }})."
+          metric: outbox_oldest_age_seconds
+          threshold: "> 30 seconds"
+          impact: "The Consolidated projection is falling behind; merchants may see a stale balance until the backlog drains."
+          action: "Check ledger-outbox-publisher logs and its RabbitMQ connection; if the publisher is stuck, restart it after confirming no in-flight confirm is lost."
+          closing_condition: "outbox_oldest_age_seconds <= 30 for 2 consecutive minutes."
+          runbook_url: "docs/runbooks/broker.md"
+
+      - alert: MerchantPositionGapPersisting
+        expr: consolidation_consumer_gaps > 0
+        for: 30s
+        labels:
+          severity: warning
+          component: consolidation-consumer
+        annotations:
+          summary: "{{ $value }} merchant(s) have source_position > applied_position for more than 30s."
+          metric: consolidation_consumer_gaps
+          threshold: "> 0, sustained for 30 seconds"
+          impact: "The affected merchant's balance is temporarily stale until the missing position arrives or is reconciled."
+          action: "Query consolidation.merchant_progress for the affected merchant/position; confirm whether the missing delivery is in retry or already isolated in the DLQ."
+          closing_condition: "consolidation_consumer_gaps == 0."
+          runbook_url: "docs/runbooks/gap.md"
+
+      - alert: DeadLetterQueueNotEmpty
+        expr: consolidation_consumer_pending_dlq > 0
+        for: 0s
+        labels:
+          severity: critical
+          component: consolidation-consumer
+        annotations:
+          summary: "{{ $value }} event(s) isolated in the Consolidation DLQ."
+          metric: consolidation_consumer_pending_dlq
+          threshold: "> 0"
+          impact: "Item(s) are stuck indefinitely until an operator intervenes; the affected merchant's balance may remain wrong until reprocessed."
+          action: "Diagnose the persistent failure (docs/runbooks/dlq.md), fix the root cause, then run the protected `reconciliation-worker dlq` command (requires an operator token carrying ops:reconcile, see ADR-008) to reprocess."
+          closing_condition: "consolidation_consumer_pending_dlq == 0 AND the reconciliation run for the affected merchant/date at the post-reprocessing cut reports zero missing, extra and duplicated entries (verify via reconciliation_last_run_* gauges, not DLQ depth alone)."
+          runbook_url: "docs/runbooks/dlq.md"
+
+      - alert: ConsolidationErrorRateAboveFivePercent
+        expr: |
+          sum(rate(cashflow_http_failures_total{service="consolidation-api"}[5m]))
+          /
+          clamp_min(sum(rate(cashflow_http_requests_total{service="consolidation-api"}[5m])), 1)
+          > 0.05
+        for: 1m
+        labels:
+          severity: critical
+          component: consolidation-api
+        annotations:
+          summary: "Consolidation API 5xx rate is {{ $value | humanizePercentage }} over a 5-minute window."
+          metric: "cashflow_http_failures_total / cashflow_http_requests_total (service=consolidation-api)"
+          threshold: "> 5% over a complete 5-minute moving window"
+          impact: "A meaningful share of merchant balance queries are failing."
+          action: "Check consolidation-api logs and traces (Jaeger) for the failing requests; verify Postgres connectivity and connection pool saturation; consider rolling back a recent deploy."
+          closing_condition: "Error rate <= 5% sustained for 5 consecutive minutes."
+          runbook_url: "docs/runbooks/api-health.md"
+
+      - alert: ConsolidationP95LatencyAboveFiveHundredMillis
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(cashflow_http_request_duration_seconds_bucket{service="consolidation-api"}[5m])) by (le)
+          ) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+          component: consolidation-api
+        annotations:
+          summary: "Consolidation API p95 latency is {{ $value | humanizeDuration }} over a 5-minute window."
+          metric: cashflow_http_request_duration_seconds (service=consolidation-api)
+          threshold: "p95 > 500ms"
+          impact: "Merchants experience noticeably slower responses; risk of client/KrakenD timeouts under peak load."
+          action: "Check Postgres connection pool and query latency, container CPU/memory, and current replica count."
+          closing_condition: "p95 <= 500ms sustained for 5 consecutive minutes."
+          runbook_url: "docs/runbooks/api-health.md"
+
+      - alert: LedgerWatermarkNotVerifiable
+        expr: reconciliation_seconds_since_last_run < 0 or reconciliation_seconds_since_last_run > 900
+        for: 0s
+        labels:
+          severity: critical
+          component: reconciliation-worker
+        annotations:
+          summary: "No successful reconciliation run completed in the last 15 minutes (or none has ever completed)."
+          metric: reconciliation_seconds_since_last_run
+          threshold: "< 0 (never ran) or > 900 seconds since the last completed run"
+          impact: "There is no recent proof that the Ledger and Consolidated projection agree; divergence could be accumulating undetected."
+          action: "Check reconciliation-worker logs; confirm gRPC connectivity to the Ledger and that the cashflow-reconciliation-svc client credentials/mTLS are still valid."
+          closing_condition: "reconciliation_seconds_since_last_run drops back under 900 AND reconciliation_errors_total stops increasing for 15 minutes."
+          runbook_url: "docs/runbooks/watermark.md"
+
+      - alert: RecoveryPipelineErrorsIncreasing
+        expr: |
+          increase(outbox_publish_errors_total[5m]) > 0
+          or increase(consolidation_consumer_retry_total[5m]) > 5
+          or increase(reconciliation_errors_total[5m]) > 0
+        for: 0s
+        labels:
+          severity: warning
+          component: recovery-pipeline
+        annotations:
+          summary: "Publisher confirm, consumption or reconciliation errors increased in the last 5 minutes."
+          metric: "outbox_publish_errors_total | consolidation_consumer_retry_total | reconciliation_errors_total"
+          threshold: "any publish error, more than 5 new retries, or any reconciliation error within 5 minutes"
+          impact: "Early sign of transient trouble in the recovery pipeline; if it persists it can escalate into a DLQ item or a position gap."
+          action: "Correlate with the specific component's logs/traces via trace_id (outbox-publisher, consolidation-consumer or reconciliation-worker)."
+          closing_condition: "No further increase in any of the three counters for 10 minutes."
+          runbook_url: "docs/runbooks/broker.md"
+
+      - alert: CriticalInfrastructureComponentDown
+        expr: up{job=~"rabbitmq|keycloak"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "{{ $labels.job }} is not responding to Prometheus scrapes."
+          metric: "up{job=~\"rabbitmq|keycloak\"}"
+          threshold: "up == 0, sustained for 30 seconds"
+          impact: "A critical infrastructure dependency (message broker or identity provider) is unreachable; dependent services will start failing readiness or mutations."
+          action: "Check container status (docker compose ps/logs <service>); restart the component; escalate if it does not recover."
+          closing_condition: "up == 1 for 2 consecutive minutes."
+          runbook_url: "docs/runbooks/broker.md"
+          known_gap: "PostgreSQL and the KrakenD gateway are not covered by this alert -- neither has a Prometheus exporter deployed yet (postgres_exporter and KrakenD's own OpenTelemetry metrics export are candidates, tracked separately)."
+
+      # NOT IMPLEMENTED -- see the group-level comment above. Left commented
+      # out (not a live rule returning permanent "no data") so `promtool
+      # check rules` and Alertmanager both treat this file as containing
+      # exactly the 8 alerts above, with no silently-broken 9th rule.
+      #
+      # - alert: ResourceCapacityNearLimit
+      #   expr: >
+      #     node_filesystem_avail_bytes / node_filesystem_size_bytes < 0.10
+      #     or pg_stat_activity_count / pg_settings_max_connections > 0.80
+      #     or container_memory_working_set_bytes / container_spec_memory_limit_bytes > 0.85
+      #   annotations:
+      #     summary: "Disk, PostgreSQL connections or container memory approaching capacity."
+      #     threshold: "disk <10% free, or >80% of max_connections in use, or >85% of memory limit"
+      #     impact: "Imminent risk of write failures (disk), connection refusals (Postgres) or OOM kill (memory)."
+      #     action: "Free disk space / scale storage; investigate connection leaks; raise memory limits or scale out."
+      #     closing_condition: "All three ratios back under threshold for 10 minutes."
+      #   requires: "node_exporter (disk/memory), cAdvisor or container runtime metrics (memory), and postgres_exporter behind a dedicated read-only monitoring role (connections)."

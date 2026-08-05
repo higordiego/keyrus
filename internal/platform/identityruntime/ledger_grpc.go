@@ -17,14 +17,14 @@ import (
 )
 
 type LedgerGRPCConfig struct {
-	Verifier       *auth.Verifier
-	Tenants        grpcsecurity.TenantAuthorizer
-	TLS            *tls.Config
-	Logger         *slog.Logger
-	Handler        ledgerrpc.Handler
-	MaxDeadline    time.Duration
-	MaxRecvBytes   int
-	MaxSendBytes   int
+	Verifier     *auth.Verifier
+	Tenants      grpcsecurity.TenantAuthorizer
+	TLS          *tls.Config
+	Logger       *slog.Logger
+	Handler      ledgerrpc.Handler
+	MaxDeadline  time.Duration
+	MaxRecvBytes int
+	MaxSendBytes int
 }
 
 // NewLedgerGRPCServer constructs a TLS-secured gRPC server bounded by the

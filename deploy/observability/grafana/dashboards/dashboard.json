@@ -1,174 +1,209 @@
 {
   "title": "Cashflow Observability",
   "uid": "cashflow-obs",
+  "description": "One panel per row of the technical plan's \"Metricas minimas\" table (Borda/API, Ledger, RabbitMQ, Consolidado, Reconciliacao, Keycloak). Cache has no panel: no Redis/cache is deployed yet (T07 did not build one) -- see the text panel at the bottom instead of a panel querying a metric that cannot exist. Every expr below was verified against a live Prometheus scraping the real stack, not written speculatively.",
   "panels": [
     {
       "id": 1,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "type": "timeseries",
-      "title": "APIs (HTTP/gRPC) RPM & Latency",
+      "title": "Borda/API -- request rate & failures (RPS, status)",
       "targets": [
-        {
-          "expr": "rate(http_server_duration_milliseconds_count[5m])",
-          "refId": "A"
-        }
+        { "expr": "sum by (service) (rate(cashflow_http_requests_total[5m]))", "legendFormat": "{{service}} requests/s", "refId": "A" },
+        { "expr": "sum by (service) (rate(cashflow_http_failures_total[5m]))", "legendFormat": "{{service}} 5xx/s", "refId": "B" },
+        { "expr": "sum by (service) (rate(cashflow_http_rejections_total[5m]))", "legendFormat": "{{service}} 401/403 rejections/s", "refId": "C" }
       ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      }
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
     },
     {
       "id": 2,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "type": "timeseries",
-      "title": "DB Commits",
+      "title": "Borda/API -- p50/p95/p99 latency (threshold: p95 500ms alert)",
       "targets": [
-        {
-          "expr": "rate(pg_stat_database_xact_commit[5m])",
-          "refId": "A"
-        }
+        { "expr": "histogram_quantile(0.50, sum by (le, service) (rate(cashflow_http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{service}} p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (le, service) (rate(cashflow_http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{service}} p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum by (le, service) (rate(cashflow_http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{service}} p99", "refId": "C" }
       ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      }
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.5 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
     },
     {
       "id": 3,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 8
-      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "type": "timeseries",
-      "title": "Idempotency Hits",
+      "title": "Ledger -- commits, idempotency conflicts, failures",
       "targets": [
-        {
-          "expr": "rate(idempotency_hits_total[5m])",
-          "refId": "A"
-        }
+        { "expr": "rate(ledger_mutation_commits_total[5m])", "legendFormat": "commits/s", "refId": "A" },
+        { "expr": "rate(ledger_mutation_idempotency_conflicts_total[5m])", "legendFormat": "idempotency conflicts/s", "refId": "B" },
+        { "expr": "rate(ledger_mutation_failures_total[5m])", "legendFormat": "failures/s", "refId": "C" }
       ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      }
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
     },
     {
       "id": 4,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 8
-      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "type": "timeseries",
-      "title": "Outbox Pending Events",
+      "title": "Ledger -- outbox pending & oldest age (threshold: 30s alert)",
       "targets": [
-        {
-          "expr": "outbox_pending_events",
-          "refId": "A"
-        }
+        { "expr": "outbox_pending", "legendFormat": "pending events", "refId": "A" },
+        { "expr": "outbox_oldest_age_seconds", "legendFormat": "oldest pending age (s)", "refId": "B" }
       ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      }
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 30 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
     },
     {
       "id": 5,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 16
-      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "type": "timeseries",
-      "title": "RabbitMQ Queue Depth",
+      "title": "RabbitMQ -- ready/unacked messages, consumers (rabbitmq_prometheus plugin)",
       "targets": [
-        {
-          "expr": "rabbitmq_queue_messages",
-          "refId": "A"
-        }
+        { "expr": "rabbitmq_queue_messages_ready", "legendFormat": "{{queue}} ready", "refId": "A" },
+        { "expr": "rabbitmq_queue_messages_unacked", "legendFormat": "{{queue}} unacked", "refId": "B" },
+        { "expr": "rabbitmq_queue_consumers", "legendFormat": "{{queue}} consumers", "refId": "C" }
       ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      }
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
     },
     {
       "id": 6,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 16
-      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "type": "timeseries",
-      "title": "Consolidation Gaps",
+      "title": "RabbitMQ -- publish confirms, redeliveries (via our own publisher/consumer)",
       "targets": [
-        {
-          "expr": "consolidation_gaps_total",
-          "refId": "A"
-        }
+        { "expr": "rate(outbox_publish_confirms_total[5m])", "legendFormat": "publish confirms/s", "refId": "A" },
+        { "expr": "rate(outbox_publish_errors_total[5m])", "legendFormat": "publish errors/s", "refId": "B" },
+        { "expr": "rate(consolidation_consumer_retry_total[5m])", "legendFormat": "consumer redeliveries (retry)/s", "refId": "C" }
       ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      }
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
     },
     {
       "id": 7,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 24
-      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
       "type": "timeseries",
-      "title": "Watermark Delay",
+      "title": "Consolidado -- apply rate, duplicates, gaps (threshold: gap >0 for 30s alert)",
       "targets": [
-        {
-          "expr": "watermark_delay_seconds",
-          "refId": "A"
-        }
+        { "expr": "rate(consolidation_consumer_applied_total[5m])", "legendFormat": "applied/s", "refId": "A" },
+        { "expr": "rate(consolidation_consumer_duplicate_total[5m])", "legendFormat": "duplicates/s", "refId": "B" },
+        { "expr": "consolidation_consumer_gaps", "legendFormat": "merchants with a position gap", "refId": "C" }
       ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      }
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
     },
     {
       "id": 8,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 24
-      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "type": "timeseries",
-      "title": "Keycloak Active Sessions",
+      "title": "Consolidado -- DLQ depth & recomputes (threshold: DLQ >0 alert)",
       "targets": [
-        {
-          "expr": "keycloak_active_sessions",
-          "refId": "A"
-        }
+        { "expr": "consolidation_consumer_pending_dlq", "legendFormat": "pending DLQ", "refId": "A" },
+        { "expr": "consolidation_consumer_pending_retry", "legendFormat": "pending retry", "refId": "B" },
+        { "expr": "consolidation_consumer_recomputes", "legendFormat": "active/failed recomputes", "refId": "C" }
       ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      }
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
+    },
+    {
+      "id": 9,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "type": "timeseries",
+      "title": "Reconciliacao -- last run divergence (missing/extra/duplicated/financial)",
+      "targets": [
+        { "expr": "reconciliation_last_run_missing_entries", "legendFormat": "missing", "refId": "A" },
+        { "expr": "reconciliation_last_run_extra_entries", "legendFormat": "extra", "refId": "B" },
+        { "expr": "reconciliation_last_run_duplicated_entries", "legendFormat": "duplicated", "refId": "C" },
+        { "expr": "reconciliation_last_run_financial_difference_minor", "legendFormat": "financial diff (minor units)", "refId": "D" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
+    },
+    {
+      "id": 10,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "type": "timeseries",
+      "title": "Reconciliacao -- watermark freshness (threshold: 900s alert)",
+      "targets": [
+        { "expr": "reconciliation_seconds_since_last_run", "legendFormat": "seconds since last completed run", "refId": "A" },
+        { "expr": "rate(reconciliation_errors_total[15m])", "legendFormat": "errors/s (15m rate)", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 900 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
+    },
+    {
+      "id": 11,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "type": "timeseries",
+      "title": "Keycloak -- HTTP traffic, readiness, DB pool (agroal)",
+      "targets": [
+        { "expr": "sum(rate(http_server_requests_seconds_count{job=\"keycloak\"}[5m]))", "legendFormat": "requests/s", "refId": "A" },
+        { "expr": "up{job=\"keycloak\"}", "legendFormat": "up (1=ready)", "refId": "B" },
+        { "expr": "agroal_active_count{datasource=\"default\"}", "legendFormat": "DB pool active connections", "refId": "C" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
+    },
+    {
+      "id": 12,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "type": "text",
+      "title": "Cache -- not implemented",
+      "options": {
+        "mode": "markdown",
+        "content": "No Redis/cache layer is deployed in this stack (T07 did not build one). This panel is a deliberate placeholder rather than a query against `redis_*`/`cache_*` metrics that would silently show \"No data\" forever and look like a real, working, empty signal. Wire this panel to real hit/miss/error/fallback metrics once a cache is introduced."
+      },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" }
     }
   ],
   "schemaVersion": 36,

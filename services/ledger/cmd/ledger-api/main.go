@@ -17,6 +17,7 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/exaring/otelpgx"
 	ledgerv1 "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/public/v1"
 	ledgerrpc "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/rpc"
 	"github.com/higordiegoti/keyrus/internal/platform/auth"
@@ -27,8 +28,8 @@ import (
 	inboundgrpc "github.com/higordiegoti/keyrus/services/ledger/internal/adapters/inbound/grpc"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/adapters/outbound/postgres"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/application"
+	"github.com/higordiegoti/keyrus/services/ledger/internal/observability"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/exaring/otelpgx"
 )
 
 func main() {
@@ -64,6 +65,7 @@ func run(logger *slog.Logger) error {
 	var inboundServer ledgerv1.LedgerServiceServer
 	var internalHandler ledgerrpc.Handler
 	var readiness func(context.Context) error
+	domainMetrics := &observability.Metrics{}
 	if fixture := os.Getenv("CASHFLOW_IDENTITY_FIXTURE_OWNERS"); fixture != "" {
 		owners, err := identityruntime.ParseOwners(fixture)
 		if err != nil {
@@ -100,14 +102,16 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("NewService: %w", err)
 		}
-		inboundServer = inboundgrpc.NewServer(app)
+		ledgerServer := inboundgrpc.NewServer(app)
+		ledgerServer.SetMetrics(domainMetrics)
+		inboundServer = ledgerServer
 		internalHandler = inboundgrpc.NewInternalServer(pool)
 	}
 	delegations, err := identityruntime.ParseAssignments(required("CASHFLOW_SERVICE_TENANT_DELEGATIONS"))
 	if err != nil {
 		return fmt.Errorf("ParseAssignments: %w", err)
 	}
-	
+
 	grpcMaxDeadline, err := time.ParseDuration(value("CASHFLOW_GRPC_MAX_DEADLINE", "5s"))
 	if err != nil {
 		return fmt.Errorf("parse CASHFLOW_GRPC_MAX_DEADLINE: %w", err)
@@ -121,14 +125,14 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	grpcServer, err := identityruntime.NewLedgerGRPCServer(identityruntime.LedgerGRPCConfig{
-		Verifier:       internalVerifier,
-		Tenants:        grpcsecurity.NewStaticTenantDelegations(delegations),
-		TLS:            grpcTLS,
-		Logger:         logger,
-		Handler:        internalHandler,
-		MaxDeadline:    grpcMaxDeadline,
-		MaxRecvBytes:   2097152,
-		MaxSendBytes:   4194304,
+		Verifier:     internalVerifier,
+		Tenants:      grpcsecurity.NewStaticTenantDelegations(delegations),
+		TLS:          grpcTLS,
+		Logger:       logger,
+		Handler:      internalHandler,
+		MaxDeadline:  grpcMaxDeadline,
+		MaxRecvBytes: 2097152,
+		MaxSendBytes: 4194304,
 	})
 	if err != nil {
 		return err
@@ -164,13 +168,14 @@ func run(logger *slog.Logger) error {
 
 	var ready atomic.Bool
 	publicServer := runtimeobs.HTTPServer(httpHandler)
+	managementHandler := runtimeobs.ManagementHandler("ledger-api", func(ctx context.Context) error {
+		if !ready.Load() {
+			return errors.New("not ready")
+		}
+		return readiness(ctx)
+	}, metrics)
 	managementServer := &http.Server{
-		Handler: runtimeobs.ManagementHandler("ledger-api", func(ctx context.Context) error {
-			if !ready.Load() {
-				return errors.New("not ready")
-			}
-			return readiness(ctx)
-		}, metrics),
+		Handler:           appendDomainMetrics(managementHandler, domainMetrics),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      5 * time.Second,
@@ -201,6 +206,20 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	return managementServer.Shutdown(shutdown)
+}
+
+// appendDomainMetrics wraps the base management handler so GET /metrics also
+// carries the Ledger domain counters (commits, idempotency conflicts,
+// failures, commit latency) alongside the generic HTTP counters
+// runtimeobs.ManagementHandler already exposes. /health/live and
+// /health/ready are untouched.
+func appendDomainMetrics(base http.Handler, domain *observability.Metrics) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		base.ServeHTTP(writer, request)
+		if request.Method == http.MethodGet && request.URL.Path == "/metrics" {
+			_ = domain.WritePrometheus(writer)
+		}
+	})
 }
 
 func shutdownTracing(shutdown func(context.Context) error) {
