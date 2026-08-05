@@ -1,17 +1,17 @@
-# Runbook: Running and interpreting reconciliation
+# Runbook: Executando e interpretando a reconciliação
 
-This is the general-purpose runbook for the reconciliation-worker itself (T08): how to run it, and how to read its result. For the specific "the worker has stopped proving anything" alert, see [watermark.md](watermark.md); for "it proved a DLQ item exists", see [dlq.md](dlq.md); for a position gap, see [gap.md](gap.md).
+Este é o runbook de uso geral para o próprio reconciliation-worker (T08): como executá-lo e como interpretar o seu resultado. Para o alerta específico "the worker has stopped proving anything" (o worker parou de provar qualquer coisa), veja [watermark.md](watermark.md); para "it proved a DLQ item exists" (provou que um item na DLQ existe), veja [dlq.md](dlq.md); para um position gap, veja [gap.md](gap.md).
 
-## Running a reconciliation on demand
+## Executando uma reconciliação sob demanda (on demand)
 
 ```sh
 docker compose exec reconciliation-worker \
   reconciliation-worker run <merchant_id> <business_date>
 ```
 
-This fetches the merchant's current watermark from the Ledger (`GetMerchantWatermark`), then compares the Ledger's stream up to that cut against the Consolidated projection (`services/consolidation/internal/reconciliation/worker.go`). It is safe to run repeatedly: repeating the exact same cut is a no-op (proven by `TestReconcile_RepeatSameCut_NoEffect`), and it can never overwrite a newer already-persisted result with an older one (`TestReconcile_NewerVersionNeverOverwritten`), even under concurrent execution (`TestReconcile_ConcurrentCut`).
+Isso busca o watermark atual do merchant no Ledger (`GetMerchantWatermark`), e então compara o stream do Ledger até aquele corte (cut) com a projeção Consolidated (`services/consolidation/internal/reconciliation/worker.go`). É seguro executar repetidamente: repetir exatamente o mesmo corte é um no-op (provado por `TestReconcile_RepeatSameCut_NoEffect`), e nunca pode sobrescrever um resultado mais novo já persistido com um mais antigo (`TestReconcile_NewerVersionNeverOverwritten`), mesmo sob execução concorrente (`TestReconcile_ConcurrentCut`).
 
-## Reading the result
+## Interpretando o resultado
 
 ```sql
 SELECT source_position_cut, missing_entries, extra_entries, duplicated_entries,
@@ -20,21 +20,21 @@ FROM consolidation.reconciliation_run
 WHERE merchant_id = $1 AND business_date = $2;
 ```
 
-- **`missing_entries` > 0**: present on the Ledger, absent from the Consolidated projection -- almost always an active or resolved-but-unreconciled gap; see [gap.md](gap.md).
-- **`extra_entries` > 0**: present on the Consolidated projection, absent from the Ledger at that cut. Investigate before assuming this is benign -- it can mean a delivery arrived after the cut was taken (re-run at a fresher cut) or, more seriously, a data-integrity issue in the projection.
-- **`duplicated_entries` > 0**: the same `entry_id` appears more than once in `consolidation.inbox_event` for that merchant/date -- a projector invariant that should be impossible in normal operation (`UNIQUE (merchant_id, position)` plus the conflict checks in `services/consolidation/internal/adapters/outbound/postgres/store.go`); treat any non-zero value as a bug report, not routine noise.
-- **`financial_difference_minor` > 0**: the absolute difference between the Ledger's and the projection's net (credits − debits) at the cut, in minor currency units. This can be non-zero even when the three entry counts above are all zero if amounts were recorded incorrectly for a matching entry -- always check this figure even when the counts look clean.
+- **`missing_entries` > 0**: presente no Ledger, ausente na projeção Consolidated -- quase sempre um gap ativo ou resolvido-mas-não-reconciliado; veja [gap.md](gap.md).
+- **`extra_entries` > 0**: presente na projeção Consolidated, ausente do Ledger naquele corte (cut). Investigue antes de assumir que isso é benigno -- pode significar que uma entrega (delivery) chegou após o corte ter sido feito (execute novamente com um corte mais recente) ou, mais seriamente, um problema de integridade de dados na projeção.
+- **`duplicated_entries` > 0**: o mesmo `entry_id` aparece mais de uma vez em `consolidation.inbox_event` para aquele merchant/date -- um invariante do projector que deveria ser impossível em operação normal (`UNIQUE (merchant_id, position)` mais as checagens de conflito em `services/consolidation/internal/adapters/outbound/postgres/store.go`); trate qualquer valor diferente de zero como um bug report, não ruído de rotina.
+- **`financial_difference_minor` > 0**: a diferença absoluta entre o net (credits − debits) do Ledger e da projeção no corte, em minor currency units. Isso pode ser diferente de zero mesmo quando as três contagens de entries acima são todas zero, se os valores (amounts) foram registrados incorretamente para uma entry correspondente -- sempre verifique esse número mesmo quando as contagens parecerem limpas.
 
-None of these fields ever carry the entry's description or amount by itself (only aggregated diffs), so this table is safe to query and log without redaction (see [ADR-010](../adrs/ADR-010-log-redaction.md)).
+Nenhum desses campos jamais carrega a description ou o amount da entry por si só (apenas diffs agregados), então esta tabela é segura para consultar e fazer log sem redação (redaction) (veja [ADR-010](../adrs/ADR-010-log-redaction.md)).
 
-## Reprocessing the DLQ
+## Reprocessando a DLQ
 
-See [dlq.md](dlq.md) for the protected `reconciliation-worker dlq` command and its audit trail (`consolidation.dlq_reprocess_audit`).
+Veja [dlq.md](dlq.md) para o comando protegido `reconciliation-worker dlq` e a sua trilha de auditoria (audit trail) (`consolidation.dlq_reprocess_audit`).
 
-## Numeric validation
+## Validação numérica
 
-The condition of success for any reprocessing is **exactly one** financial effect per item -- not "at most one". After reprocessing, re-run reconciliation at a cut that includes the reprocessed item and confirm all four divergence fields read zero.
+A condição de sucesso para qualquer reprocessamento é **exatamente um** efeito financeiro por item -- não "no máximo um". Após o reprocessamento, execute novamente a reconciliação em um corte que inclua o item reprocessado e confirme que todos os quatro campos de divergência leiam zero.
 
-## Closing condition
+## Condição de fechamento
 
-`missing_entries = extra_entries = duplicated_entries = 0` and `financial_difference_minor = 0` for the run at the relevant cut.
+`missing_entries = extra_entries = duplicated_entries = 0` e `financial_difference_minor = 0` para a execução no corte relevante.

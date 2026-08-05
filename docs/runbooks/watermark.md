@@ -1,41 +1,41 @@
-# Runbook: Ledger watermark not verifiable
+# Runbook: Ledger watermark não verificável
 
-Triggered by: `LedgerWatermarkNotVerifiable` (`reconciliation_seconds_since_last_run < 0` or `> 900`).
+Acionado por: `LedgerWatermarkNotVerifiable` (`reconciliation_seconds_since_last_run < 0` ou `> 900`).
 
-This is not "the Ledger and Consolidado disagree" -- that is `DeadLetterQueueNotEmpty` / `MerchantPositionGapPersisting` firing instead, with an actual divergence measured. This alert means the reconciliation-worker itself has stopped producing *proof* one way or the other: no evidence of convergence, and none of divergence either.
+Isso não é "o Ledger e o Consolidado discordam" -- isso seria o disparo do `DeadLetterQueueNotEmpty` / `MerchantPositionGapPersisting` em vez disso, com uma divergência real medida. Esse alerta significa que o próprio reconciliation-worker parou de produzir *prova* (proof) de um jeito ou de outro: nenhuma evidência de convergência, e nenhuma de divergência também.
 
-## Diagnosis
+## Diagnóstico
 
-1. Confirm the worker process is actually running and not crash-looping:
+1. Confirme se o processo do worker está realmente executando e não em crash-looping:
    ```sh
    docker compose ps reconciliation-worker
    docker compose logs --tail=100 reconciliation-worker
    curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=up{job="reconciliation-worker"}'
    ```
-2. If the process is up but `reconciliation_seconds_since_last_run` keeps climbing, check what its last attempted run actually failed on:
+2. Se o processo estiver de pé, mas `reconciliation_seconds_since_last_run` continua subindo, verifique em que a sua última tentativa de execução realmente falhou:
    ```sh
    curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=reconciliation_errors_total'
    ```
-   A climbing `reconciliation_errors_total` alongside a climbing `seconds_since_last_run` means every attempt is failing -- see `streamSourceEntries` in `services/consolidation/internal/reconciliation/worker.go`: after `maxStreamAttempts` (3) failed stream re-opens, `Reconcile` returns an error and persists nothing.
-3. Most likely causes, in order of frequency:
-   - gRPC connectivity to the Ledger is broken (mTLS certificate expiry, `CASHFLOW_LEDGER_GRPC_TARGET` unreachable, Ledger itself down).
-   - The `cashflow-reconciliation-svc` client credentials are invalid or the client secret file (`CASHFLOW_SERVICE_CLIENT_SECRET_FILE`) is stale/rotated on one side only.
-   - The Ledger's `ops:reconcile`/`ledger:internal:read` scope grant for that client was removed from the realm (`deploy/identity/keycloak/realm-cashflow.json`).
+   Um `reconciliation_errors_total` subindo junto com um `seconds_since_last_run` subindo significa que toda tentativa está falhando -- veja `streamSourceEntries` em `services/consolidation/internal/reconciliation/worker.go`: após `maxStreamAttempts` (3) reaberturas de stream falhas, o `Reconcile` retorna um erro e não persiste nada.
+3. Causas mais prováveis, em ordem de frequência:
+   - A conectividade gRPC para o Ledger está quebrada (expiração do certificado mTLS, `CASHFLOW_LEDGER_GRPC_TARGET` inacessível, o próprio Ledger fora do ar).
+   - As client credentials do `cashflow-reconciliation-svc` são inválidas ou o client secret file (`CASHFLOW_SERVICE_CLIENT_SECRET_FILE`) está obsoleto/rotacionado (stale/rotated) apenas de um lado.
+   - A concessão do escopo (scope grant) `ops:reconcile`/`ledger:internal:read` do Ledger para aquele cliente foi removida do realm (`deploy/identity/keycloak/realm-cashflow.json`).
 
-## Impact
+## Impacto
 
-There is no recent proof the Ledger (source) and the Consolidated projection agree. This does **not** mean they have diverged -- only that nobody has checked recently. Treat it as "unknown", not "known-bad", but escalate with the same urgency: an undetected divergence during this window would also go unnoticed.
+Não há prova recente de que o Ledger (source) e a projeção Consolidated concordam. Isso **não** significa que eles divergiram -- apenas que ninguém verificou recentemente. Trate isso como "desconhecido" (unknown), não "conhecido como ruim" (known-bad), mas escale com a mesma urgência: uma divergência não detectada durante esta janela também passaria despercebida.
 
-## Safe action
+## Ação segura
 
-- Restore gRPC/credential connectivity per the diagnosis above; the worker's daemon loop (a 10-second ticker, see `runDaemon` in `services/consolidation/cmd/reconciliation-worker/main.go`) resumes automatically once it can reach the Ledger again -- no manual restart of the reconciliation logic itself is needed, only of whatever dependency was broken.
-- If the worker container itself is down, restart it: `docker compose restart reconciliation-worker`.
+- Restaure a conectividade do gRPC/credenciais conforme o diagnóstico acima; o loop do daemon do worker (um ticker de 10 segundos, veja `runDaemon` em `services/consolidation/cmd/reconciliation-worker/main.go`) é retomado automaticamente assim que conseguir alcançar o Ledger novamente -- não é necessário reiniciar manualmente a própria lógica de reconciliação, apenas a dependência que estava quebrada.
+- Se o container do worker em si estiver fora do ar, reinicie-o: `docker compose restart reconciliation-worker`.
 
-## Reprocessing
+## Reprocessamento
 
-Not applicable directly -- this alert is about the *prover* being unavailable, not about a proven divergence. Once connectivity is restored and a run completes, check its actual result (see [reconciliation.md](reconciliation.md)); if it reports non-zero missing/extra/duplicated entries, follow [dlq.md](dlq.md) or [gap.md](gap.md) as appropriate for what it found.
+Não se aplica diretamente -- este alerta é sobre o *prover* (provador) estar indisponível, não sobre uma divergência comprovada. Uma vez que a conectividade seja restaurada e uma execução seja concluída, verifique o seu resultado real (veja [reconciliation.md](reconciliation.md)); se ele reportar entries missing/extra/duplicated diferentes de zero, siga [dlq.md](dlq.md) ou [gap.md](gap.md) conforme apropriado para o que ele encontrou.
 
-## Numeric validation
+## Validação numérica
 
 ```sh
 curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=reconciliation_seconds_since_last_run'
@@ -43,6 +43,6 @@ curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=reconciliatio
 curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=reconciliation_errors_total'
 ```
 
-## Closing condition
+## Condição de fechamento
 
-`reconciliation_seconds_since_last_run` drops back under 900 **and** `reconciliation_errors_total` stops increasing for 15 minutes -- a single lucky successful run right after a long outage is not enough on its own to declare this closed.
+`reconciliation_seconds_since_last_run` cai de volta para menos de 900 **e** `reconciliation_errors_total` para de aumentar por 15 minutos -- uma única execução bem-sucedida por sorte logo após uma longa indisponibilidade não é o suficiente por si só para declarar isso como fechado.

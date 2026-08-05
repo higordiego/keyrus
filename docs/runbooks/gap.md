@@ -1,41 +1,41 @@
-# Runbook: Merchant position gap persisting
+# Runbook: Gap persistente na posição do merchant
 
-Triggered by: `MerchantPositionGapPersisting` (`consolidation_consumer_gaps > 0`, sustained 30s).
+Acionado por: `MerchantPositionGapPersisting` (`consolidation_consumer_gaps > 0`, sustentado por 30s).
 
-## Diagnosis
+## Diagnóstico
 
-1. Identify the affected merchant(s) and the missing position:
+1. Identifique o(s) merchant(s) afetado(s) e a posição ausente:
    ```sql
    SELECT merchant_id, source_position, applied_position, first_gap, gap_detected_at
    FROM consolidation.merchant_progress
    WHERE source_position > applied_position;
    ```
-   `first_gap` is the earliest missing position blocking `applied_position` from advancing (see `services/consolidation/internal/adapters/outbound/postgres/store.go`).
-2. Find where that specific position currently is:
+   `first_gap` é a primeira posição ausente que está impedindo `applied_position` de avançar (veja `services/consolidation/internal/adapters/outbound/postgres/store.go`).
+2. Encontre onde essa posição específica está atualmente:
    ```sql
    SELECT event_id, failure_class, error_code, attempts, last_failed_at
    FROM consolidation.event_pending
    WHERE merchant_id = $1;
    ```
-   - `failure_class = 'retry'`: still retrying, will self-heal once the transient cause clears.
-   - `failure_class = 'dlq'`: isolated permanently until reprocessed -- go to [dlq.md](dlq.md).
-   - No row at all: the event may still be in flight through RabbitMQ, or was never published (check [broker.md](broker.md) and the Ledger outbox for that merchant/position).
+   - `failure_class = 'retry'`: ainda realizando retentativas, se auto-recuperará assim que a causa transitória for resolvida.
+   - `failure_class = 'dlq'`: isolado permanentemente até ser reprocessado -- vá para [dlq.md](dlq.md).
+   - Nenhuma linha encontrada: o evento pode ainda estar em voo (in flight) pelo RabbitMQ, ou nunca foi publicado (verifique [broker.md](broker.md) e a outbox do Ledger para esse merchant/posição).
 
-## Impact
+## Impacto
 
-The merchant's balance is correct up to `applied_position - 1` and will not include anything at or after the gap until it closes -- out-of-order deliveries at higher positions are held, not discarded (see `manter-lancamentos-durante-falha.feature`'s ordering scenarios).
+O saldo do merchant está correto até `applied_position - 1` e não incluirá nada na posição do gap ou posterior até que ele seja fechado -- entregas fora de ordem em posições superiores ficam retidas, não descartadas (veja os cenários de ordenação em `manter-lancamentos-durante-falha.feature`).
 
-## Safe action
+## Ação segura
 
-- If the gap is in `retry`, no action is usually needed; confirm `attempts`/`last_failed_at` are still advancing and the retry backoff has not stalled.
-- If in `dlq`, follow [dlq.md](dlq.md) -- do not try to "skip" the position by fabricating a synthetic entry.
-- If the event was never published at all, check the Ledger's own outbox for that merchant/position (`ledger.outbox_event`) and [broker.md](broker.md).
+- Se o gap estiver em `retry`, geralmente nenhuma ação é necessária; confirme se as `attempts`/`last_failed_at` ainda estão avançando e se o backoff de retentativa não estagnou.
+- Se estiver na `dlq`, siga [dlq.md](dlq.md) -- não tente "pular" a posição fabricando uma entrada sintética.
+- Se o evento nunca foi publicado, verifique a própria outbox do Ledger para aquele merchant/posição (`ledger.outbox_event`) e o [broker.md](broker.md).
 
-## Reprocessing
+## Reprocessamento
 
-Reprocessing (via the DLQ path or once the retry succeeds) applies the missing position; `consolidation_consumer_gaps` clears automatically once `applied_position` catches up to `source_position` -- there is no separate "close the gap" step beyond resolving whatever is blocking that one position.
+O reprocessamento (através do caminho da DLQ ou assim que o retry for bem-sucedido) aplica a posição ausente; `consolidation_consumer_gaps` zera automaticamente assim que `applied_position` alcança `source_position` -- não há um passo separado de "fechar o gap" além de resolver o que quer que esteja bloqueando aquela única posição.
 
-## Numeric validation
+## Validação numérica
 
 ```sh
 curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=consolidation_consumer_gaps'
@@ -43,9 +43,9 @@ curl -s http://localhost:9090/api/v1/query --data-urlencode 'query=consolidation
 ```sql
 SELECT merchant_id, source_position, applied_position FROM consolidation.merchant_progress
 WHERE merchant_id = $1;
--- applied_position must equal source_position once resolved
+-- applied_position deve igualar source_position uma vez resolvido
 ```
 
-## Closing condition
+## Condição de encerramento
 
 `consolidation_consumer_gaps == 0`.
