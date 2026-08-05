@@ -21,7 +21,7 @@ const (
 
 type systemClock struct{}
 
-func (systemClock) Now() time.Time { return time.Now() }
+func (systemClock) Now() time.Time { return time.Now().Truncate(time.Microsecond) }
 
 type uuidGenerator struct{}
 

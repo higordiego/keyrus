@@ -104,7 +104,7 @@ func run(logger *slog.Logger) error {
 	metrics := &runtimeobs.Metrics{}
 
 	var store application.QueryStore
-	dbURI := value("CASHFLOW_DB_URI", "")
+	dbURI := value("CASHFLOW_DB_URL", "")
 	if dbURI == "" {
 		store = &application.MockQueryStore{}
 	} else {

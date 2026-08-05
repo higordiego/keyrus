@@ -38,8 +38,10 @@ func (s *QueryService) GetDailyBalances(ctx context.Context, merchantID string, 
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("DEBUG Balances returned: %+v\n", balances)
 	progress, err := s.store.Progress(ctx, merchantID)
 	if err != nil {
+		fmt.Printf("ERROR in Progress: %v\n", err)
 		progress = domain.MerchantProgress{}
 	}
 	pendingRecompute, err := s.store.HasPendingRecompute(ctx, merchantID)
@@ -83,7 +85,9 @@ func (s *QueryService) GetDailyBalances(ctx context.Context, merchantID string, 
 
 	bMap := make(map[string]domain.DailyBalance)
 	for _, b := range balances {
-		bMap[b.BusinessDate.Format(domain.DateLayout)] = b
+		key := b.BusinessDate.Format(domain.DateLayout)
+		fmt.Printf("DEBUG bMap key: %s (from %v)\n", key, b.BusinessDate)
+		bMap[key] = b
 	}
 
 	var results []*consolidationv1.DailyBalance
