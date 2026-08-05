@@ -73,8 +73,8 @@ func TestCommandOpenAPIRequiresIdempotencyAndDocumentsStatuses(t *testing.T) {
 		path     string
 		statuses []string
 	}{
-		{path: "/v1/entries", statuses: []string{"201", "400", "401", "403", "409"}},
-		{path: "/v1/entries/{entryId}/reversals", statuses: []string{"201", "400", "401", "403", "404", "409"}},
+		{path: "/v1/entries", statuses: []string{"200", "400", "401", "403", "409"}},
+		{path: "/v1/entries/{entryId}/reversals", statuses: []string{"200", "400", "401", "403", "404", "409"}},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -96,8 +96,8 @@ func TestCommandOpenAPIRequiresIdempotencyAndDocumentsStatuses(t *testing.T) {
 					t.Errorf("documented response %s is missing", status)
 				}
 			}
-			if _, exists := operation.Responses["200"]; exists {
-				t.Error("command must document 201 rather than 200")
+			if _, exists := operation.Responses["201"]; exists {
+				t.Error("command must document 200, not 201: grpc-gateway always returns 200 for a successful unary RPC unless a ForwardResponseOption overrides it, which this codebase does not have")
 			}
 		})
 	}

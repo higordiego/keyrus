@@ -112,7 +112,7 @@ export default function (data) {
         },
     };
     const today = new Date().toISOString().split('T')[0];
-    let readRes = http.get(`${CONSOLIDATION_URL}/v1/daily-balances?start_date=${today}&end_date=${today}`, readParams);
+    let readRes = http.get(`${CONSOLIDATION_URL}/v1/daily-balances?startDate=${today}&endDate=${today}`, readParams);
     if (readRes.status !== 200 && __ITER === 0) {
         console.error(`Read failed! Status: ${readRes.status}, Body: ${readRes.body}`);
     }

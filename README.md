@@ -120,8 +120,8 @@ Para simular um **cenário realista de concorrência massiva**, dividimos a carg
 - `write_entries`: 40 VUs focados apenas em gerar lançamentos (`POST /v1/entries`), estressando a Ledger API, Postgres e RabbitMQ.
 - `read_balances`: 20 VUs buscando o saldo consolidado (`GET /v1/daily-balances`), estressando a Consolidation API.
 - `list_entries`: 20 VUs buscando extratos gerais (`GET /v1/entries`).
-- `get_entry`: 10 VUs lendo um lançamento específico pelo ID (`GET /v1/entries/{entry_id}`).
-- `reverse_entry`: 10 VUs tentando realizar o estorno de um lançamento de forma concorrente (`POST /v1/entries/{entry_id}/reversals`).
+- `get_entry`: 10 VUs lendo um lançamento específico pelo ID (`GET /v1/entries/{entryId}`).
+- `reverse_entry`: 10 VUs tentando realizar o estorno de um lançamento de forma concorrente (`POST /v1/entries/{entryId}/reversals`).
 
 > **Nota de Avaliação (Rate Limits):** O KrakenD possui *rate limits* estritos. Para permitir que o gateway local aceite as rajadas do teste de carga sem bloqueios artificiais (HTTP 429), **os limites globais de requisições no `deploy/edge/krakend/krakend.json` foram majorados para 2.000**. Para testar cenários de bloqueio e resiliência, basta baixar esses números e aplicar a carga novamente.
 ## Acessos e Interfaces
@@ -162,12 +162,12 @@ curl -X POST http://localhost:8080/v1/entries \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: $(python3 -c 'import uuid; print(uuid.uuid4())')" \
-  -d '{"type":"ENTRY_TYPE_CREDIT","amount":"10.00","currency":"BRL","business_date":"2026-08-05","description":"venda"}'
+  -d '{"type":"ENTRY_TYPE_CREDIT","amount":"10.00","currency":"BRL","businessDate":"2026-08-05","description":"venda"}'
 ```
 
 Para consultar o saldo consolidado (leitura):
 ```sh
-curl -X GET "http://localhost:8080/v1/daily-balances?start_date=2026-08-05&end_date=2026-08-05" \
+curl -X GET "http://localhost:8080/v1/daily-balances?startDate=2026-08-05&endDate=2026-08-05" \
   -H "Host: edge.cashflow.local" \
   -H "X-Forwarded-Proto: https" \
   -H "Authorization: Bearer $TOKEN"

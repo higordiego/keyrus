@@ -10,4 +10,3 @@ plugins:
       - generate_unbound_methods=false
       - disable_default_responses=true
       - use_go_templates=true
-      - json_names_for_fields=false
