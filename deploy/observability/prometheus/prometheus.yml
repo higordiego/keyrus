@@ -1,10 +1,67 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
 
 scrape_configs:
+  # Traces are exported to Jaeger directly; this target only carries
+  # whatever metrics arrive over OTLP (currently none -- every service below
+  # exposes its own hand-rolled Prometheus text endpoint instead). Kept so a
+  # future switch to OTLP metrics needs no scrape_config change.
   - job_name: 'otel-collector'
     static_configs:
       - targets: ['otel-collector:8889']
+
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+
+  - job_name: 'ledger-api'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['ledger-api:9091']
+
+  - job_name: 'ledger-outbox-publisher'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['ledger-outbox-publisher:8080']
+
+  - job_name: 'consolidation-api'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['consolidation-api:9092']
+
+  - job_name: 'consolidation-consumer'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['consolidation-consumer:8081']
+
+  - job_name: 'reconciliation-worker'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['reconciliation-worker:9092']
+
+  # rabbitmq_prometheus plugin (deploy/rabbitmq/enabled_plugins), exposing
+  # ready/unacked message counts, consumer lag and queue depth natively --
+  # not something our own consumer/publisher code should reimplement.
+  - job_name: 'rabbitmq'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['rabbitmq:15692']
+
+  # Keycloak's management interface (KC_METRICS_ENABLED=true, see
+  # deploy/identity/keycloak.Containerfile) listens on 9000 over HTTPS --
+  # it inherits the main listener's TLS configuration in this image, it does
+  # not fall back to plain HTTP. It is reachable over cashflow-net without
+  # being published to the host. insecure_skip_verify matches how this
+  # Compose stack already trusts its own self-signed certificates elsewhere
+  # (see secrets/certs) rather than distributing a CA bundle to Prometheus.
+  - job_name: 'keycloak'
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['keycloak:9000']
