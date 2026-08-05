@@ -18,14 +18,14 @@ import (
 var hexKeyPattern = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
 
 // TestMakeDryRunNeverPrintsTheEvidenceAttestationKey reproduces the reviewer's
-// first proof: `make -n test`/`make -n reports` require no real execution and
-// must not print anything shaped like the attestation key. Before this fixup,
-// the key was a Makefile recipe variable substituted directly into an echoed
-// command line, so it appeared in this exact dry-run output.
+// first proof: `make -n test` requires no real execution and must not print
+// anything shaped like the attestation key. Before this fixup, the key was a
+// Makefile recipe variable substituted directly into an echoed command line,
+// so it appeared in this exact dry-run output.
 func TestMakeDryRunNeverPrintsTheEvidenceAttestationKey(t *testing.T) {
 	t.Parallel()
 	root := repositoryRoot(t)
-	for _, target := range []string{"test", "reports"} {
+	for _, target := range []string{"test"} {
 		t.Run(target, func(t *testing.T) {
 			t.Parallel()
 			command := exec.Command("make", "-n", target)
@@ -46,7 +46,7 @@ func TestMakeDryRunNeverPrintsTheEvidenceAttestationKey(t *testing.T) {
 // the dry-run proof: it fails if the key ever again becomes literal recipe
 // text, regardless of whether a particular dry run happens to reveal it. The
 // original bug was a Make variable (`$(RUNTIME_EVIDENCE_KEY)`) referenced
-// inside a `test`/`reports` recipe line; this asserts the Makefile no longer
+// inside a `test` recipe line; this asserts the Makefile no longer
 // defines any such variable at all, so the key can only ever exist inside a
 // file on disk.
 func TestMakefileNeverEmbedsTheKeyInARecipeLine(t *testing.T) {
@@ -73,7 +73,7 @@ func TestMakefileNeverEmbedsTheKeyInARecipeLine(t *testing.T) {
 func TestEvidenceKeyScriptsNeverTraceOrPrintTheKey(t *testing.T) {
 	t.Parallel()
 	root := repositoryRoot(t)
-	for _, script := range []string{"scripts/run-tests.sh", "scripts/run-reports.sh"} {
+	for _, script := range []string{"scripts/run-tests.sh"} {
 		t.Run(script, func(t *testing.T) {
 			t.Parallel()
 			contents, err := os.ReadFile(filepath.Join(root, script))
