@@ -1,25 +1,25 @@
 # Smoke tests
 
-Run against a real, already-built `docker compose` stack (or let
-`clean-startup.sh` build it). Each script is `set -eu`: it exits non-zero on
-the first failed check, with a message explaining what failed.
+Execute contra uma stack do `docker compose` real e já construída (ou deixe o
+`clean-startup.sh` construí-la). Cada script utiliza `set -eu`: ele sai com erro não-zero (exits non-zero) no
+primeiro teste que falhar, com uma mensagem explicando o que falhou.
 
-| Script | Proves |
+| Script | Prova |
 | --- | --- |
-| [`clean-startup.sh`](clean-startup.sh) | `docker compose up --build` on a machine with no prior state (no volumes) reaches full health with zero manual steps -- including that `ledger-migrate`/`consolidation-migrate` actually ran and exited 0, which is what makes every other service's Postgres auth work at all (see T10 session notes / `docs/compliance-matrix.md` CH-09). |
-| [`restart-isolation.sh`](restart-isolation.sh) | Stopping every Consolidation-exclusive container does not affect the Ledger's readiness or its ability to accept a request (T10 Aceite). |
-| [`replica-loss.sh`](replica-loss.sh) | Killing and restarting a single stateless service instance recovers cleanly without corrupting or degrading the rest of the stack. This Compose stack has no multi-replica services (that is Swarm-only, out of scope here -- see [`docs/runbooks/replica-loss.md`](../../docs/runbooks/replica-loss.md)), so this proves the underlying statelessness property real replica loss depends on, not multi-replica failover itself. |
+| [`clean-startup.sh`](clean-startup.sh) | `docker compose up --build` em uma máquina sem estado prévio (no prior state) (sem volumes) alcança health total com zero passos manuais -- incluindo que `ledger-migrate`/`consolidation-migrate` realmente rodaram e saíram com código 0 (exited 0), que é o que faz a autenticação do Postgres de qualquer outro serviço funcionar afinal (veja notas da sessão T10 / `docs/compliance-matrix.md` CH-09). |
+| [`restart-isolation.sh`](restart-isolation.sh) | Parar cada container exclusivo de Consolidation não afeta a prontidão (readiness) do Ledger ou a sua habilidade de aceitar uma requisição (T10 Aceite). |
+| [`replica-loss.sh`](replica-loss.sh) | Matar e reiniciar uma única instância de serviço stateless se recupera perfeitamente sem corromper ou degradar o resto da stack. Esta stack Compose não possui serviços multi-replica (isso é exclusivo do Swarm, fora do escopo aqui -- veja [`docs/runbooks/replica-loss.md`](../../docs/runbooks/replica-loss.md)), então isto prova a propriedade de statelessness subjacente da qual a real replica loss depende, não o failover multi-replica em si. |
 
-## Not implemented: cache fallback
+## Não implementado: cache fallback
 
-The fourth smoke test the T10 ticket names is cache-fallback-on-Redis-outage. There is no cache/Redis in this system (T07 did not build one -- see [`docs/runbooks/redis.md`](../../docs/runbooks/redis.md) and the Grafana dashboard's Cache panel). A script here would have nothing to test against; it is not stubbed out with a fake pass.
+O quarto smoke test que o ticket T10 nomeia é cache-fallback-on-Redis-outage. Não há cache/Redis neste sistema (A T07 não construiu um -- veja [`docs/runbooks/redis.md`](../../docs/runbooks/redis.md) e o painel Cache no dashboard do Grafana). Um script aqui não teria nada contra o que testar; não é substituído por um falso "pass".
 
-## Running
+## Executando
 
 ```sh
-./scripts/smoke/clean-startup.sh       # also builds/starts the stack
-./scripts/smoke/restart-isolation.sh   # requires the stack already up
-./scripts/smoke/replica-loss.sh        # requires the stack already up
+./scripts/smoke/clean-startup.sh       # também compila/inicia a stack
+./scripts/smoke/restart-isolation.sh   # requer a stack já em pé
+./scripts/smoke/replica-loss.sh        # requer a stack já em pé
 ```
 
-Or all three via `make smoke`.
+Ou todos os três via `make smoke`.

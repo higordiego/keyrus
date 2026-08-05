@@ -1,37 +1,37 @@
 # Public edge
 
-`krakend/krakend.json` is the allow-listed public surface for KrakenD Community
-Edition 2.10. It publishes five business routes and the minimum OIDC protocol
-surface. It does not publish Keycloak administration, health, metrics, the
-master realm, application management endpoints, or internal gRPC methods.
+`krakend/krakend.json` é a superfície pública allow-listed (em lista de permissões) para o KrakenD Community
+Edition 2.10. Ele publica cinco rotas de negócios e a superfície mínima do protocolo
+OIDC. Ele não publica endpoints de administração do Keycloak, health, metrics, o
+master realm, endpoints de gerenciamento de aplicação, ou métodos gRPC internos.
 
-Protected routes pin RS256, issuer, audience and exact scopes. Headers are
-allow-listed: `Authorization`, W3C trace context and, on command routes,
-`Idempotency-Key` reach the adapter; spoofable tenant/proxy headers and
-`baggage` do not.
+Rotas protegidas fixam (pin) RS256, issuer, audience e scopes exatos. Os headers são
+allow-listed: `Authorization`, W3C trace context e, em rotas de comando,
+`Idempotency-Key` alcançam o adapter; headers forjáveis (spoofable) de tenant/proxy e
+`baggage` não.
 
-Public `tracestate` is untrusted. The adapters preserve only the fixed,
-data-free marker `cashflow=public-edge`; every other value is dropped. The
-Collector also clears span `trace_state` before export, so KrakenD's earlier
-instrumentation cannot export an opaque client value. `traceparent` remains
-the correlation source across HTTP and gRPC.
+O `tracestate` público não é confiável. Os adapters preservam apenas o marcador
+fixo livre de dados `cashflow=public-edge`; todos os outros valores são descartados. O
+Collector também limpa o `trace_state` do span antes do export, para que a instrumentação
+anterior do KrakenD não possa exportar um valor opaco do cliente. O `traceparent` permanece
+sendo a fonte de correlação através de HTTP e gRPC.
 
-No retry component is configured on either business `POST`. A failed response
-is returned to the client, whose explicit repetition must reuse the same
-`Idempotency-Key`. The router rate limits are local to each KrakenD replica:
-they are abuse protection, not a distributed quota or a financial control.
+Nenhum componente de retry (tentativa) está configurado em qualquer `POST` de negócios. Uma resposta com falha
+é retornada ao cliente, cuja repetição explícita deve reutilizar a mesma
+`Idempotency-Key`. Os rate limits (limites de taxa) do roteador são locais para cada réplica do KrakenD:
+eles são proteção contra abusos, não uma cota distribuída ou um controle financeiro.
 
-The three browser/token OIDC routes have a 15-second backend budget. The global
-`write_timeout` is 20 seconds so a cold Keycloak still has five seconds of
-response-write margin; it must always remain greater than the largest endpoint
-timeout. Transport errors are terminal in the PKCE smoke and are never retried.
+As três rotas OIDC de browser/token têm um budget de backend de 15 segundos. O
+`write_timeout` global é de 20 segundos para que um Keycloak frio (cold) ainda tenha cinco segundos de
+margem de response-write; ele deve permanecer sempre maior que o maior timeout
+de endpoint. Erros de transporte são terminais no PKCE smoke e nunca sofrem retry.
 
-The final image declares a Docker `HEALTHCHECK` against KrakenD's built-in
-loopback `GET /__health` probe. The E2E waits for Docker state `healthy`, asserts
-UID/GID 65532 and separately proves that application/Keycloak management,
-health and metrics paths are absent from the public route allowlist.
+A imagem final declara um Docker `HEALTHCHECK` contra o probe de loopback
+`GET /__health` integrado do KrakenD. O E2E aguarda pelo Docker state `healthy`, assevera
+o UID/GID 65532 e comprova separadamente que os caminhos de gerenciamento da aplicação/Keycloak,
+health e metrics estão ausentes da lista de permissão de rotas públicas.
 
-Validate the file with the same pinned Community Edition line:
+Valide o arquivo com a mesma versão fixada (pinned) do Community Edition:
 
 ```sh
 docker run --rm \
@@ -39,5 +39,5 @@ docker run --rm \
   krakend:2.10 check -c /etc/krakend/krakend.json --lint
 ```
 
-The Go validator in `internal/platform/edge/krakendconfig` adds project-specific
-invariants that the upstream schema cannot express.
+O Go validator em `internal/platform/edge/krakendconfig` adiciona invariantes
+específicos do projeto que o schema do upstream não consegue expressar.
