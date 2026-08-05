@@ -21,6 +21,9 @@ func (s fakeHealthStore) Ready(context.Context) error { return s.ready }
 func (s fakeHealthStore) PendingBacklog(context.Context) (int64, int64, error) {
 	return 0, 0, nil
 }
+func (s fakeHealthStore) SystemStats(context.Context) (int64, int64, error) {
+	return 0, 0, nil
+}
 
 type fakeReadyConsumer struct{ ready error }
 
