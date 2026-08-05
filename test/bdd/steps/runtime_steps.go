@@ -10,10 +10,6 @@ import (
 	"github.com/higordiegoti/keyrus/test/support/timingoracle"
 )
 
-// Every binding below reads the values the real stack observed. A step never
-// accepts a bare "passed" flag: it names the oracle, the observation keys and,
-// wherever the outcome has one correct value, that exact value.
-
 func (w *world) givenValidIdentityEvidence() error {
 	return w.requireValues("valid_identity", map[string]string{
 		"issuer":      issuerURL,

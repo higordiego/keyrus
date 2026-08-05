@@ -60,8 +60,6 @@ func (w *world) serviceToken(scopes ...string) (string, error) {
 	})
 }
 
-// --- @SCN-RNF08-009 -------------------------------------------------------
-
 func (w *world) givenWatermarkRPCBelongsToThePrivateNetwork() error {
 	if err := w.startPrivateSurface(); err != nil {
 		return err
@@ -71,8 +69,7 @@ func (w *world) givenWatermarkRPCBelongsToThePrivateNetwork() error {
 }
 
 func (w *world) whenACallWithoutServiceIdentityTriesIt() error {
-	// A merchant token is a real, correctly signed credential. It simply is not
-	// a service identity for the internal audience.
+
 	merchantToken, err := w.issuer.Mint(authtest.TokenOptions{
 		Subject:    "merchant-a",
 		Audience:   []string{internalAudience},
@@ -133,8 +130,6 @@ func (w *world) thenTheEdgeHasNoPublicRouteForThatRPC() error {
 	}
 	return nil
 }
-
-// --- @SCN-RNF09-004 -------------------------------------------------------
 
 func (w *world) givenInternalCallHasTraceContextAndDeadline() error {
 	if err := w.startPrivateSurface(); err != nil {
@@ -241,8 +236,6 @@ func (w *world) thenCancellationDeadlineAndSizeLimitsAreHonoured() error {
 		return fmt.Errorf("the oversized message still reached the service; observed %d calls", len(calls))
 	}
 
-	// Cancellation must reach the server context rather than being swallowed by
-	// the interceptor chain.
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	connection, err := w.harness.Connection(w.harness.PKI.ClientTLS(), grpcsecurity.StaticToken("unused"), time.Second)

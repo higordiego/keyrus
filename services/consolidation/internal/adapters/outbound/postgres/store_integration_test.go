@@ -369,9 +369,6 @@ func exerciseMerchantLockIsolation(t *testing.T) (err error) {
 		return err
 	}
 
-	// The ungranted advisory lock above is the deterministic barrier. B now
-	// executes synchronously while A is observably waiting; the context is only
-	// a safety budget, not a latency oracle.
 	if _, err := projector.Apply(ctx, fixtureEvent(merchantB, 1, domain.EntryCredit, 200, "2026-07-31", nil)); err != nil {
 		return fmt.Errorf("merchant B did not advance while merchant A waited: %w", err)
 	}
@@ -496,9 +493,6 @@ func TestRecomputeJobsAreBoundedToThirtyOneCalendarDays(t *testing.T) {
 	}
 	assertProgress(t, store, merchant, 2, 2, nil)
 
-	// A valid old event can be delivered after a long outage. Its business date
-	// was accepted by Ledger at confirmation time, so the projector must catch
-	// up rather than reject it using today's calendar.
 	delayedMerchant := "71000000-0000-4000-8000-000000000007"
 	latest := fixtureEvent(delayedMerchant, 2, domain.EntryCredit, 100, "2026-07-31", nil)
 	if _, err := projector.Apply(ctx, latest); err != nil {
@@ -538,8 +532,6 @@ func TestRecomputeJobsAreBoundedToThirtyOneCalendarDays(t *testing.T) {
 		t.Fatalf("redelivery advanced continuation to %s", nextDate.Format(domain.DateLayout))
 	}
 
-	// Inject a failure after the block writes but before continuation advance.
-	// PostgreSQL must roll back both the calendar block and its cursor.
 	if _, err := integrationPool.Exec(ctx, fmt.Sprintf(`
 		CREATE FUNCTION consolidation.reject_test_recompute_advance() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN RAISE EXCEPTION 'injected recompute continuation failure'; END;
@@ -577,7 +569,6 @@ func TestRecomputeJobsAreBoundedToThirtyOneCalendarDays(t *testing.T) {
 		t.Fatal("failed continuation left a partially materialized calendar block")
 	}
 
-	// A separate merchant commits while A remains durably pending and unlocked.
 	independentMerchant := "72000000-0000-4000-8000-000000000007"
 	if _, err := projector.Apply(ctx, fixtureEvent(independentMerchant, 1, domain.EntryCredit, 700, "2026-07-31", nil)); err != nil {
 		t.Fatalf("independent merchant between recompute blocks: %v", err)

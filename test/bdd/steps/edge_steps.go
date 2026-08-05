@@ -27,8 +27,6 @@ var privatePathProbes = []string{
 	"/realms/cashflow/protocol/openid-connect/token/introspect",
 }
 
-// --- @SCN-RNF08-002 -------------------------------------------------------
-
 func (w *world) givenEdgeCredentialCondition(condition string) error {
 	token, err := w.mintCondition(condition)
 	if err != nil {
@@ -77,11 +75,8 @@ func (w *world) thenEdgeRejectsWithoutForwarding() error {
 	return nil
 }
 
-// --- @SCN-RNF08-003 -------------------------------------------------------
-
 func (w *world) givenCallReachedThePrivateNetworkDirectly() error {
-	// Reaching the service directly means the edge validator never ran. Nothing
-	// is configured here beyond that fact; the service must still refuse.
+
 	if w.gateway != nil {
 		return fmt.Errorf("this scenario must bypass the edge, but a gateway was already engaged")
 	}
@@ -90,8 +85,7 @@ func (w *world) givenCallReachedThePrivateNetworkDirectly() error {
 }
 
 func (w *world) givenItsCredentialIsInvalidForTheOperation() error {
-	// Correctly signed and unexpired, but granted only a read scope: valid as a
-	// credential, invalid for the command being attempted.
+
 	token, err := w.mintValid(auth.ScopeLedgerRead)
 	if err != nil {
 		return err
@@ -126,8 +120,6 @@ func (w *world) thenNoEntryWasConfirmed() error {
 	return nil
 }
 
-// --- @SCN-RNF08-004 -------------------------------------------------------
-
 func (w *world) givenValidPublicRequestCarriesTheFourHeaders() error {
 	token, err := w.mintValid(auth.ScopeLedgerWrite)
 	if err != nil {
@@ -160,7 +152,7 @@ func (w *world) whenTheEdgeForwardsItToTheResponsibleService() error {
 	request.Header.Set(tracecontext.TraceParentHeader, span.String())
 	request.Header.Set(tracecontext.TraceStateHeader, "cashflow=edge")
 	request.Header.Set("Content-Type", "application/json")
-	// Provenance headers a client can forge must not survive the edge.
+
 	request.Header.Set("X-Merchant-Id", merchantB)
 	request.Header.Set("X-Forwarded-For", "203.0.113.7")
 	request.Header.Set("Baggage", "tenant=attacker")
@@ -203,8 +195,6 @@ func (w *world) thenTheServiceReceivesTheFourHeadersUnchanged() error {
 	return nil
 }
 
-// --- @SCN-RNF08-005 -------------------------------------------------------
-
 func (w *world) givenBackendConfirmedThenBrokeTheResponse() error {
 	token, err := w.mintValid(auth.ScopeLedgerWrite)
 	if err != nil {
@@ -220,8 +210,7 @@ func (w *world) givenBackendConfirmedThenBrokeTheResponse() error {
 	if err != nil {
 		return err
 	}
-	// The command was durably confirmed upstream and only the response broke,
-	// which is exactly the case where a gateway retry would double the effect.
+
 	backend.Respond(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusBadGateway)
 	})
@@ -258,8 +247,6 @@ func (w *world) thenAClientRepetitionDependsOnTheSameIdempotencyKey() error {
 		return fmt.Errorf("the first attempt reached the service without an Idempotency-Key")
 	}
 
-	// The repetition is a new client request. It reaches the service only
-	// because the client made it, and it carries the very same key.
 	backend.Respond(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusCreated)
 	})
@@ -283,15 +270,12 @@ func (w *world) commandRequest(idempotencyKey string) *http.Request {
 	return request
 }
 
-// --- @SCN-RNF08-008 -------------------------------------------------------
-
 func (w *world) givenKeycloakIsReachableInsideTheOverlay() error {
 	gateway, err := w.edge()
 	if err != nil {
 		return err
 	}
-	// The identity provider is a declared upstream, so the scenario is about
-	// which of its paths the edge chooses to publish.
+
 	for _, route := range gateway.Routes() {
 		if strings.Contains(route, "/realms/cashflow/protocol/openid-connect/") {
 			return nil

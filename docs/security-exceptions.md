@@ -1,31 +1,31 @@
-# Security exception policy
+# Política de exceção de segurança (Security exception policy)
 
-Secrets cannot be excepted. Remove the credential, revoke/rotate it, and purge affected history before pushing.
+Secrets não podem ser exceções. Remova a credencial, revogue/rotacione (revoke/rotate) a mesma, e elimine o histórico afetado antes de fazer o push.
 
-For any other temporary gate exception, open a private tracking issue or PR record containing every field below. The approving maintainer owns expiry enforcement; an expired exception fails closed.
+Para qualquer outra exceção temporária de gate, abra uma tracking issue privada ou registro de PR contendo todos os campos abaixo. O maintainer aprovador é o responsável pela aplicação da expiração; uma exceção expirada falha fechada (fails closed).
 
 ```text
-Finding/rule:
-Affected component and commit:
-Risk and reachability:
-Business justification:
-Compensating mitigation:
-Owner (named person):
-Approver (different named person where possible):
-Created (YYYY-MM-DD):
-Expires (YYYY-MM-DD, maximum 30 days):
-Removal criteria and tracking link:
+Finding/rule (Descoberta/regra):
+Affected component and commit (Componente afetado e commit):
+Risk and reachability (Risco e alcance):
+Business justification (Justificativa de negócios):
+Compensating mitigation (Mitigação compensatória):
+Owner (named person) (Proprietário - pessoa nomeada):
+Approver (different named person where possible) (Aprovador - pessoa nomeada diferente, se possível):
+Created (YYYY-MM-DD) (Criado):
+Expires (YYYY-MM-DD, maximum 30 days) (Expira - máximo de 30 dias):
+Removal criteria and tracking link (Critérios de remoção e link de rastreamento):
 ```
 
-Allowlist entries must reference that record and encode the narrowest path/fingerprint possible. Permanent wildcard suppressions, severity downgrades, and unowned or non-expiring exceptions are prohibited. Renewal requires fresh evidence and approval before expiry.
+Entradas na allowlist devem referenciar esse registro e codificar o caminho/fingerprint mais restrito possível. Supressões com wildcard permanentes, reduções de severidade, e exceções sem proprietário ou que não expiram são proibidas. A renovação exige evidências recentes e aprovação antes da expiração.
 
-Finding/rule: directAccessGrantsEnabled enabled on public client cashflow-merchant-app
+Finding/rule: directAccessGrantsEnabled habilitado no public client cashflow-merchant-app
 Affected component and commit: deploy/identity/keycloak/realm-cashflow.json
-Risk and reachability: Allows resource owner password credentials grant on a public client, which is generally discouraged in favor of PKCE. Reachable only within the isolated testing realm.
-Business justification: Required to facilitate automated load testing via K6, which cannot easily simulate interactive browser-based PKCE flows.
-Compensating mitigation: This realm configuration is only used for local and ephemeral load testing environments, not in production.
+Risk and reachability: Permite a concessão de credentials de senha do proprietário do recurso em um public client, o que geralmente é desencorajado em favor do PKCE. Acessível apenas dentro do realm de teste isolado.
+Business justification: Necessário para facilitar os testes de carga automatizados via K6, que não pode simular facilmente fluxos interativos de PKCE baseados no navegador.
+Compensating mitigation: Esta configuração de realm é usada apenas para ambientes de testes de carga locais e efêmeros, não em produção.
 Owner (named person): Higor Diego
 Approver (different named person where possible): Agent
 Created (YYYY-MM-DD): 2026-08-04
 Expires (YYYY-MM-DD, maximum 30 days): 2026-09-03
-Removal criteria and tracking link: Remove when K6 script is replaced or rewritten to mock browser flows natively. (T02-edge-identity-security)
+Removal criteria and tracking link: Remover quando o script K6 for substituído ou reescrito para fazer mock dos fluxos do navegador nativamente. (T02-edge-identity-security)

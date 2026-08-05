@@ -1,150 +1,105 @@
 # Arquitetura Alvo
 
-Aqui explico como a arquitetura nova ataca, componente a componente, os incidentes descritos em [O Legado e os Incidentes Reais](legado-e-incidentes.md). Também trago o diagrama completo do sistema e o fluxo de uma requisição do começo ao fim, para responder "o que acontece quando o comerciante registra um lançamento".
+Aqui detalhamos como a arquitetura do sistema funciona na prática e resolve as falhas do passado. O objetivo principal é mostrar "o que acontece quando o lojista registra um lançamento" e os motivos das nossas escolhas tecnológicas.
 
-## 1. Por que essa arquitetura
+## Problema Identificado e Decisões
 
-A ideia central é orientação a eventos: Go, gRPC, AMQP e bancos separados por domínio. Cada ponto abaixo ataca diretamente um problema do legado.
+Analisando o cenário legado, identificamos que processar requisições pesadas de leitura de saldo no mesmo banco de dados responsável por gravar transações gerava gargalos terríveis (locks de tabela e timeouts). Nesse caso, a recomendação é utilizar o padrão CQRS (Command Query Responsibility Segregation) com bancos isolados.
 
-1. **CQRS acaba com o lock compartilhado.** O Ledger só grava (append-only) e responde ao cliente na hora. O Consolidado lê os eventos de forma assíncrona. Não tem mais briga entre registrar uma venda e atualizar saldo na mesma transação.
-2. **Idempotência já nasce no contrato.** A API em Protobuf exige `Idempotency-Key` e `merchant_position`, então um clique duplo não duplica saldo nem lançamento.
-3. **Os relatórios param de dar timeout.** O banco do Consolidado guarda a informação pré-calculada. Um `GET /v1/daily-balances` responde em milissegundos, não importa se o Ledger já tem um bilhão de lançamentos.
-4. **Escala horizontal de verdade.** Com Go e os serviços separados (Ledger e Consolidado), a ideia de "servidor único" simplesmente deixa de existir. Cada peça escala de acordo com o próprio gargalo.
-5. **Segurança nativa, não colada por cima.** O gateway e os contratos Protobuf já mapeiam `401` e `403` de forma explícita no OpenAPI. Não tem como chegar no Ledger sem identidade e escopo validados.
-6. **Observabilidade de ponta a ponta.** O evento AMQP carrega `traceparent` (W3C Trace Context) obrigatoriamente, então dá pra seguir um request desde o gateway até a confirmação no RabbitMQ e o consumo pelo Consolidado, sem depender de log solto.
+Foi definido o uso dessa abordagem guiada a eventos (Go, gRPC, RabbitMQ) porque:
 
----
+1. **Acabamos com o lock compartilhado:** O Ledger só grava lançamentos rápidos. O Consolidado consome os eventos e calcula o saldo sem interferir na gravação. Com isso, conseguimos altíssima resiliência.
+2. **Idempotência Nativa:** O envio exige a `Idempotency-Key`. Se a rede oscilar, o cliente pode reenviar a mesma chave que a API não criará o lançamento duas vezes.
+3. **Fim dos timeouts:** O banco de Consolidação guarda a tabela do dia pré-calculada. O usuário consulta e recebe a resposta em milissegundos.
+4. **Segurança no Gateway:** O KrakenD fica na borda barrando qualquer request sem token JWT ou escopo válido antes de encostar na infraestrutura financeira.
+5. **Observabilidade de Ponta a Ponta:** Todo o fluxo carrega o `trace_id` (OpenTelemetry). O objetivo é conseguir buscar uma requisição desde a borda até o último consumidor sem precisar ficar pescando logs.
 
-## 2. O sistema completo
+## Fluxo de Funcionamento Completo
 
-O legado era uma caixa só fazendo tudo. Aqui cada responsabilidade vira um componente com autoridade, réplica e domínio de falha próprios. Nada disso é hipotético: Ledger, Outbox Publisher, Consolidation Consumer/API e a borda de identidade já rodam com código real, testados contra PostgreSQL, RabbitMQ, Keycloak e KrakenD de verdade neste repositório.
+O fluxo irá funcionar da seguinte forma: primeiro a requisição chega no KrakenD e é validada. Em seguida, a chamada é direcionada para o contexto correto (Ledger ou Consolidation). Cada domínio roda em seu próprio banco PostgreSQL, e a sincronização é mediada através da fila no RabbitMQ.
 
 ```mermaid
 flowchart TB
-    Client((Comerciantes / apps))
+    Client((Comerciantes))
     Client -->|HTTPS + JWT| KrakenD
 
-    subgraph Edge [Borda pública]
-        KrakenD[KrakenD Gateway\nJWT, roteamento, rate-limit local]
-        Keycloak[Keycloak\nOIDC / Authorization Code + PKCE]
+    subgraph Borda
+        KrakenD[KrakenD Gateway]
+        Keycloak[Keycloak OIDC]
         KrakenD -.OIDC.-> Keycloak
     end
 
-    subgraph LedgerSvc [Serviço Ledger, fonte autoritativa]
-        LedgerAPI[Ledger API\nHTTP público + gRPC interno]
-        Publisher[Outbox Publisher\nprocesso independente]
-        LedgerAPI -->|mesma transação| LedgerDB[(schema ledger\nmerchant_position, ledger_entry,\nidempotency_record, outbox_event)]
-        Publisher -->|SKIP LOCKED| LedgerDB
+    subgraph Gravacao [Gravação Ledger]
+        LedgerAPI[Ledger API]
+        Publisher[Outbox Publisher]
+        LedgerAPI -->|Mesma Transação| LedgerDB[(Postgres Ledger)]
+        Publisher -->|Lê Outbox| LedgerDB
     end
 
-    subgraph Broker [Mensageria]
-        MQ[(RabbitMQ\nquorum queue + DLX/DLQ)]
+    subgraph Fila [Fila de Mensageria]
+        MQ[(RabbitMQ)]
     end
 
-    subgraph ConsolidationSvc [Serviço Consolidado]
-        Consumer[Consolidation Consumer\nACK pós-commit]
-        ConsolidationAPI[Consolidation API\nfrescor + fallback]
-        Reconciler[Reconciliation Worker\ncorte periódico]
-        Consumer --> ConsolidationDB[(schema consolidation\ninbox_event, daily_balance,\nmerchant_progress, recompute_job)]
+    subgraph Leitura [Consolidado Leitura]
+        Consumer[Consolidation Consumer]
+        ConsolidationAPI[Consolidation API]
+        Reconciler[Reconciliation Worker]
+        Consumer --> ConsolidationDB[(Postgres Consolidado)]
         ConsolidationAPI --> ConsolidationDB
-        ConsolidationAPI -.cache.-> Redis[(Redis/Valkey\ndispensável)]
         Reconciler --> ConsolidationDB
-    end
-
-    subgraph Obs [Observabilidade]
-        OTel[OTel Collector]
-        Prom[Prometheus]
-        Graf[Grafana]
-        Jaeger[Jaeger]
-        OTel --> Prom
-        OTel --> Jaeger
-        Prom --> Graf
     end
 
     KrakenD --> LedgerAPI
     KrakenD --> ConsolidationAPI
-    Publisher -->|publisher confirm| MQ
-    MQ -->|at-least-once + inbox idempotente| Consumer
-    ConsolidationAPI -.gRPC watermark.-> LedgerAPI
-    Reconciler -.gRPC.-> LedgerAPI
-
-    LedgerAPI -.traces/métricas.-> OTel
-    Publisher -.traces/métricas.-> OTel
-    Consumer -.traces/métricas.-> OTel
-    ConsolidationAPI -.traces/métricas.-> OTel
-    KrakenD -.traces/métricas.-> OTel
+    Publisher --> MQ
+    MQ --> Consumer
+    ConsolidationAPI -.Verifica frescor.-> LedgerAPI
+    Reconciler -.Audita.-> LedgerAPI
 ```
 
-### Por que cada peça está separada, e não junto de outra
+## Por que cada peça está separada?
 
-| Componente | O que faz | Por que não junta com outro componente |
-| --- | --- | --- |
-| KrakenD | É a única borda HTTP pública. Valida JWT, roteia, propaga `Idempotency-Key`/trace context e nunca repete um `POST` sozinho. | Se a validação de borda morasse dentro do Ledger, um bug de roteamento viraria um bug de autorização financeira. |
-| Keycloak | Emite os tokens OIDC (Authorization Code + PKCE) com claims de `merchant_id` e escopo. | Trocar isso por uma validação caseira volta a abrir o IDOR do Cenário 4 do legado. |
-| Ledger API | É a única fonte de verdade dos lançamentos. Grava entry, idempotência, posição e outbox numa transação só. | É essa transação única que resolve o Cenário 1 e o Cenário 3 do legado ao mesmo tempo. Sem ela, qualquer camada acima continua exposta a dupla escrita. |
-| Outbox Publisher | Roda separado, drena a outbox com `SKIP LOCKED` e só marca como publicado depois da confirmação do broker. | Se isso acontecesse dentro do próprio request do Ledger, uma queda do RabbitMQ voltaria a travar o `POST /entries`. É exatamente esse requisito que a arquitetura existe pra resolver. |
-| RabbitMQ (quorum + DLX/DLQ) | Transporta o evento `ledger.entry.confirmed.v1` com entrega garantida pelo menos uma vez. | A garantia financeira não vem do broker, vem da transação mais a idempotência. Isso é o que permite o Ledger nunca esperar o Consolidado. |
-| Consolidation Consumer | Consome o evento, aplica no read model e só dá ACK depois do commit. | Resolve o Cenário 2 do legado porque o consumo é assíncrono e nunca compete com o `INSERT` do Ledger. |
-| Consolidation API | Serve o saldo já calculado, nunca faz `SUM` em tempo real sobre o histórico inteiro. | É isso que elimina o full table scan de 45 segundos do legado. |
-| Reconciliation Worker | Compara Ledger e Consolidado periodicamente por um corte estável, e prova zero ausentes, extras ou duplicados. | Substitui a "esperança" do legado por uma prova numérica que se repete. |
-| PostgreSQL com schemas isolados (`ledger`, `consolidation`, `identity`) | Cada serviço tem role e schema próprios, sem join, FK ou transação cruzando domínios. | Mantém o isolamento de falha mesmo compartilhando o mesmo cluster físico por questão de custo. |
-| OTel Collector, Prometheus, Grafana, Jaeger | Correlacionam traço, métrica e log por `trace_id`, `entry_id` e `event_id`, sem nenhum dado sensível. | É a resposta direta ao "voo cego" do Cenário 4 do legado. |
+| Componente | A Escolha Técnica |
+| --- | --- |
+| **KrakenD & Keycloak** | Centraliza a segurança. Se a validação de token morasse dentro do Ledger, um bug de roteamento poderia virar uma falha de autorização financeira grave. |
+| **Ledger API** | A única fonte de verdade para os lançamentos. Ele grava o evento de Outbox junto com a transação para evitar a falha onde "gravou mas não avisou o resto do sistema". |
+| **RabbitMQ** | Fila de transporte. Ele carrega a mensagem com tolerância a falhas. A garantia financeira vem da transação do banco, o RabbitMQ apenas provê a elasticidade e o tempo de esvaziamento das mensagens. |
+| **Consolidation API** | Serve o saldo diário calculado previamente, nunca faz consultas matemáticas em tempo real cruzando a tabela histórica inteira. |
+| **Bancos de Dados Isolados** | Cada serviço tem o seu `schema` e sua `role` (`ledger_app` / `consolidation_app`). Com isso, conseguimos mitigar o risco de um domínio derrubar o outro. |
 
----
+## O Caminho do Lançamento
 
-## 3. O caminho de uma requisição
-
-Este diagrama serve pra responder "me explica o que acontece quando alguém registra um lançamento". O ponto principal: o registro nunca espera a consolidação, e uma queda do RabbitMQ ou do Consolidado não chega a aparecer pro comerciante.
+O diagrama abaixo prova o ponto principal: a gravação financeira é blindada e nunca aguarda a consolidação.
 
 ```mermaid
 sequenceDiagram
-    actor M as Comerciante
-    participant K as KrakenD (borda)
+    participant C as Cliente
+    participant Edge as KrakenD
     participant L as Ledger API
-    participant DBL as PostgreSQL (schema ledger)
-    participant P as Outbox Publisher
+    participant DB_L as PostgreSQL (Ledger)
     participant MQ as RabbitMQ
-    participant C as Consolidation Consumer
-    participant DBC as PostgreSQL (schema consolidation)
-    participant Q as Consolidation API
+    participant Con as Consolidation Consumer
+    participant DB_C as PostgreSQL (Consolidado)
 
-    M->>K: POST /entries (JWT + Idempotency-Key)
-    K->>K: valida JWT, propaga Idempotency-Key/trace context
-    K->>L: encaminha requisição
-    L->>DBL: BEGIN: entry, idempotência, posição e outbox
-    DBL-->>L: COMMIT
-    L-->>K: 201 confirmado (durável)
-    K-->>M: 201 confirmado
-
-    Note over P,MQ: assíncrono, não bloqueia a resposta acima
-    P->>DBL: claim outbox (SKIP LOCKED)
-    P->>MQ: publica ledger.entry.confirmed.v1
-    MQ-->>P: publisher confirm
-    P->>DBL: marca publicado
-
-    MQ->>C: entrega (at-least-once)
-    C->>DBC: BEGIN: inbox, posição e daily_balance
-    DBC-->>C: COMMIT
-    C->>MQ: ACK (só depois do commit)
-
-    M->>K: GET /daily-balances
-    K->>Q: encaminha requisição
-    Q->>DBC: lê saldo materializado
-    Q-->>M: saldo + watermark (definitivo true/false)
-
-    rect rgb(255, 235, 235)
-    Note over MQ,C: se o RabbitMQ ou o Consolidado caírem aqui...
-    Note over L,DBL: ...o Ledger continua confirmando normalmente
-    Note over Q: a consulta responde com o último snapshot conhecido, marcado como não definitivo
+    C->>Edge: POST /v1/entries
+    Edge->>L: Valida JWT + Roteia
+    
+    rect rgb(200, 255, 200)
+    note right of L: Transação atômica (Gravação Ultra Rápida)
+    L->>DB_L: BEGIN
+    L->>DB_L: INSERT ledger_entry
+    L->>DB_L: INSERT outbox_event
+    DB_L-->>L: COMMIT
     end
+    
+    L-->>C: HTTP 201 Created
+
+    note over MQ, DB_L: Processamento Assíncrono (Desacoplado)
+    DB_L->>MQ: Outbox Publisher envia mensagem pro broker
+    MQ->>Con: Consumer pega mensagem de ledger.entry
+    Con->>DB_C: Calcula e atualiza daily_balance
 ```
 
-Três coisas que essa sequência já prova sozinha:
+## Considerações Finais
 
-- A resposta `201` ao comerciante acontece antes de qualquer interação com RabbitMQ ou Consolidado. Não existe, em nenhum ponto do fluxo, uma chamada síncrona do Ledger pro Consolidado.
-- O ACK do consumer só acontece depois do commit no schema `consolidation`. Uma reentrega antes disso é segura porque `event_id` e posição são únicos.
-- A consulta nunca finge que um valor desatualizado é definitivo. O campo `definitivo` é justamente essa diferença: "ainda não vi esse evento" versus "está tudo errado".
-
----
-
-Anterior: [O Legado e os Incidentes Reais](legado-e-incidentes.md). Próximo: [Arquitetura de Transição](arquitetura-de-transicao.md).
+Dessa forma, isolamos o problema, entregamos respostas em milissegundos e asseguramos escalabilidade.

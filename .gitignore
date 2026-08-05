@@ -5,3 +5,4 @@ evidence/reports/*
 
 secrets/
 deploy/keycloak/realm-cashflow.json
+scratch/

@@ -189,10 +189,7 @@ func TestProcessDelivery_DomainValidationFailureGoesToDLQ(t *testing.T) {
 	consumer := newTestConsumer(t, applier, pending, 3)
 	ack := &fakeAcknowledger{}
 	payload := map[string]any{
-		// The schema's "format":"uuid" is annotation-only (format
-		// assertion is not enabled on the compiler), so an
-		// improperly-shaped UUID passes schema validation and is only
-		// caught by domain.ParseEntryConfirmed's stricter regex.
+
 		"event_id": testEventID, "event_type": EventType,
 		"occurred_at": "2026-08-01T15:00:00Z", "merchant_id": "not-a-valid-uuid",
 		"merchant_position": 1, "entry_id": testEntryID,
@@ -219,7 +216,7 @@ func TestProcessDelivery_IdentityMismatchGoesToDLQ(t *testing.T) {
 	consumer := newTestConsumer(t, applier, pending, 3)
 	ack := &fakeAcknowledger{}
 	delivery := validDelivery(ack, validPayload())
-	delivery.MessageId = "018f0000-0000-7000-8000-000000000999" // tampered identity
+	delivery.MessageId = "018f0000-0000-7000-8000-000000000999"
 
 	consumer.handle(context.Background(), delivery)
 

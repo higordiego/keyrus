@@ -27,13 +27,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/exaring/otelpgx"
 	ledgerrpc "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/rpc"
 	inboundgrpc "github.com/higordiegoti/keyrus/services/consolidation/internal/adapters/inbound/grpc"
 	outboundgrpc "github.com/higordiegoti/keyrus/services/consolidation/internal/adapters/outbound/grpc"
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/adapters/outbound/postgres"
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/application"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/exaring/otelpgx"
 )
 
 func main() {
@@ -104,7 +104,7 @@ func run(logger *slog.Logger) error {
 	metrics := &runtimeobs.Metrics{}
 
 	var store application.QueryStore
-	dbURI := value("CASHFLOW_DB_URI", "")
+	dbURI := value("CASHFLOW_DB_URL", "")
 	if dbURI == "" {
 		store = &application.MockQueryStore{}
 	} else {

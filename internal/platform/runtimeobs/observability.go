@@ -6,8 +6,10 @@ package runtimeobs
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +20,17 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
+// numDurationBuckets must equal len(durationBuckets); Go array sizes must be
+// compile-time constants, so it cannot be derived from the slice directly.
+const numDurationBuckets = 7
+
+// durationBuckets are the upper bounds (seconds) of the hand-rolled request
+// duration histogram, in the shape Prometheus's histogram_quantile() expects
+// (cumulative "le" buckets). They bracket the RNF alert threshold (p95
+// >500ms) with enough resolution on both sides of it to be useful, without
+// pulling in a metrics client library only for this one instrument.
+var durationBuckets = [numDurationBuckets]float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+
 type Metrics struct {
 	entrypoint         atomic.Uint64
 	requests           atomic.Uint64
@@ -25,6 +38,8 @@ type Metrics struct {
 	failures           atomic.Uint64
 	idempotencyHeaders atomic.Uint64
 	traceHeaders       atomic.Uint64
+	durationBucketHits [numDurationBuckets + 1]atomic.Uint64 // last slot is the +Inf bucket
+	durationSumNanos   atomic.Uint64
 }
 
 const (
@@ -59,7 +74,7 @@ func EntrypointMiddleware(metrics *Metrics, next http.Handler) http.Handler {
 	})
 }
 
-func (m *Metrics) Observe(request *http.Request, status int) {
+func (m *Metrics) Observe(request *http.Request, status int, duration time.Duration) {
 	m.requests.Add(1)
 	if request.Header.Get("Idempotency-Key") != "" {
 		m.idempotencyHeaders.Add(1)
@@ -73,6 +88,24 @@ func (m *Metrics) Observe(request *http.Request, status int) {
 	if status >= 500 {
 		m.failures.Add(1)
 	}
+	m.observeDuration(duration)
+}
+
+// observeDuration increments every cumulative bucket whose upper bound is at
+// or above the observed duration, plus the +Inf bucket, matching the
+// semantics histogram_quantile() expects.
+func (m *Metrics) observeDuration(duration time.Duration) {
+	if duration < 0 {
+		duration = 0
+	}
+	seconds := duration.Seconds()
+	m.durationSumNanos.Add(uint64(duration))
+	for i, bound := range durationBuckets {
+		if seconds <= bound {
+			m.durationBucketHits[i].Add(1)
+		}
+	}
+	m.durationBucketHits[len(durationBuckets)].Add(1)
 }
 
 // Handler exposes Prometheus text format only on the management listener.
@@ -89,7 +122,26 @@ func (m *Metrics) Handler(service string) http.Handler {
 			service, m.entrypoint.Load(),
 			service, m.requests.Load(), service, m.rejections.Load(), service, m.failures.Load(),
 			service, m.idempotencyHeaders.Load(), service, m.traceHeaders.Load())
+		m.writeDurationHistogram(writer, service)
 	})
+}
+
+// writeDurationHistogram emits cashflow_http_request_duration_seconds in
+// standard Prometheus histogram exposition format, so
+// histogram_quantile(0.95, ...) works in Prometheus/Grafana exactly as it
+// would against a client_golang histogram.
+func (m *Metrics) writeDurationHistogram(writer io.Writer, service string) {
+	_, _ = fmt.Fprintf(writer, "# HELP cashflow_http_request_duration_seconds HTTP request duration in seconds.\n# TYPE cashflow_http_request_duration_seconds histogram\n")
+	for i, bound := range durationBuckets {
+		_, _ = fmt.Fprintf(writer, "cashflow_http_request_duration_seconds_bucket{service=%q,le=%q} %d\n",
+			service, strconv.FormatFloat(bound, 'g', -1, 64), m.durationBucketHits[i].Load())
+	}
+	_, _ = fmt.Fprintf(writer, "cashflow_http_request_duration_seconds_bucket{service=%q,le=\"+Inf\"} %d\n",
+		service, m.durationBucketHits[len(durationBuckets)].Load())
+	_, _ = fmt.Fprintf(writer, "cashflow_http_request_duration_seconds_sum{service=%q} %v\n",
+		service, float64(m.durationSumNanos.Load())/float64(time.Second))
+	_, _ = fmt.Fprintf(writer, "cashflow_http_request_duration_seconds_count{service=%q} %d\n",
+		service, m.durationBucketHits[len(durationBuckets)].Load())
 }
 
 type responseRecorder struct {
@@ -140,7 +192,7 @@ func Middleware(service string, metrics *Metrics, logger *slog.Logger, next http
 		if status == 0 {
 			status = http.StatusOK
 		}
-		metrics.Observe(request, status)
+		metrics.Observe(request, status, time.Since(started))
 		span.SetAttributes(attribute.Int("http.response.status_code", status))
 		if status >= 500 {
 			span.SetStatus(otelcodes.Error, "server_error")

@@ -179,9 +179,7 @@ func resolveHandler(expression ast.Expr, index declarations) (declaration, bool)
 		if handler.Obj != nil {
 			function, ok := handler.Obj.Decl.(*ast.FuncDecl)
 			if handler.Obj.Kind != ast.Fun || !ok || function.Body == nil {
-				// In particular, reject a local variable or closure that shadows a
-				// top-level function with the same name. Name matching is not proof
-				// that the inspected body is the body Godog will execute.
+
 				return declaration{}, false
 			}
 			return declaration{
@@ -200,10 +198,7 @@ func resolveHandler(expression ast.Expr, index declarations) (declaration, bool)
 	case *ast.SelectorExpr:
 		receiver, ok := handler.X.(*ast.Ident)
 		if !ok || receiver.Obj == nil || receiver.Obj.Kind != ast.Var {
-			// A local method value has a lexically resolved variable receiver.
-			// Package selectors (including an unaliased versioned import whose
-			// declared package name differs from the path basename) and unresolved
-			// receivers fail closed instead of falling back to a homonymous method.
+
 			return declaration{}, false
 		}
 		return resolveLocalMethod(receiver, handler.Sel.Name, index)
@@ -581,8 +576,7 @@ func expressionReferencesInput(definition declaration, expression ast.Expr) bool
 		}
 		return !objectIsWithin(value.Obj, definition.start, definition.end)
 	case *ast.SelectorExpr:
-		// The selected field/method identifier has no lexical object of its own;
-		// only the receiver determines whether scenario state is being observed.
+
 		return expressionReferencesInput(definition, value.X)
 	case *ast.CallExpr:
 		if selector, ok := value.Fun.(*ast.SelectorExpr); ok && expressionReferencesInput(definition, selector.X) {

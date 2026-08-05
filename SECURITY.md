@@ -1,17 +1,17 @@
-# Security policy
+# Política de segurança (Security policy)
 
-## Reporting a vulnerability
+## Reportando uma vulnerabilidade (Reporting a vulnerability)
 
-Do not open a public issue with exploit details, credentials, customer data, or financial data. Use GitHub's private vulnerability reporting when it is enabled for this repository. Until then, contact the repository owner through a private channel and include the affected commit, impact, reproduction steps, and a safe proof of concept.
+Não abra uma issue pública com detalhes de exploit, credentials, dados de clientes ou dados financeiros. Use os relatórios de vulnerabilidade privados do GitHub quando eles estiverem ativados para este repositório. Até lá, entre em contato com o proprietário do repositório por meio de um canal privado e inclua o commit afetado, impacto, passos para reprodução e uma prova de conceito (proof of concept) segura.
 
-The maintainer will acknowledge a report within two business days, triage severity and reachability, and coordinate remediation and disclosure. There is no bug-bounty promise.
+O maintainer confirmará o recebimento de um relatório em até dois dias úteis, fará a triagem de severidade e alcance (reachability), e coordenará a remediação e divulgação. Não há nenhuma promessa de bug-bounty.
 
-## Supported versions
+## Versões suportadas (Supported versions)
 
-Only the latest commit on `main` is supported during the architecture challenge. Secrets are never accepted in reports, fixtures, logs, or commits.
+Apenas o commit mais recente na `main` tem suporte durante o architecture challenge. Secrets nunca são aceitas em reports, fixtures, logs ou commits.
 
-## Security gates
+## Gates de segurança (Security gates)
 
-`make security` scans reachable Go vulnerabilities, repository history, the working tree, dependencies, and configuration. `make policy` enforces immutable Action references and least-privilege workflow policy. HIGH/CRITICAL reachable vulnerabilities, confirmed secrets, and critical insecure configuration block changes.
+`make security` varre (scans) vulnerabilidades Go alcançáveis (reachable), o histórico do repositório, o working tree, dependências, e a configuração. `make policy` impõe referências imutáveis de Action e a política de workflow de privilégio mínimo (least-privilege). Vulnerabilidades HIGH/CRITICAL alcançáveis, secrets confirmadas, e configuração insegura crítica bloqueiam alterações.
 
-Exceptions must follow [docs/security-exceptions.md](docs/security-exceptions.md); secret findings cannot be waived.
+As exceções devem seguir o [docs/security-exceptions.md](docs/security-exceptions.md); descobertas de secret não podem ser perdoadas (waived).
