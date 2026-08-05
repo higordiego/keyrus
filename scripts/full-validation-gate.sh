@@ -10,9 +10,5 @@ for gate in policy ci security integration build-validation; do
 		echo "$gate failed with exit $gate_status" >&2
 		status=1
 	fi
-	if test "$gate" = ci; then
-		echo "==> make reports"
-		make reports || status=1
-	fi
 done
 exit "$status"

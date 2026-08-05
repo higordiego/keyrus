@@ -95,13 +95,12 @@ A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a 
 | Rodar a suíte implementada | `go test -race ./test/bdd -run '^TestImplementedScenarios$' -v` | as 25 tags do manifesto (30 cenários/165 steps após expandir os outlines) passam usando resultados estruturados do runtime real |
 | Rodar todos os testes Go | `go test -race ./...` | todos os pacotes verdes; pode depender de gerados/recortes ainda em construção |
 | Rodar gates do repositório | `make ci` | geração, formato, contratos, build, testes e catálogo verdes |
-| Gerar relatórios básicos | `make reports` | limpa evidência anterior, executa os dois produtores mesmo se um falhar, preserva o primeiro código de falha e produz `evidence/reports/ci/go-test.json`, `bdd-catalog.json` e metadados; os resultados são ignorados pelo Git |
 
 Não edite o manifesto apenas para selecionar temporariamente um cenário. Até existir um filtro explícito, a seleção oficial é versionada e representa compromisso de implementação.
 
 ## Execução no CI
 
-O workflow `.github/workflows/ci.yml` executa `make ci`, chama `make reports` mesmo após falha e publica `evidence/reports/` no artefato `foundation-reports`. O target remove os dois arquivos anteriores antes de iniciar, executa ambos os produtores independentemente e retorna falha agregada sem reaproveitar evidência residual. `bdd-catalog.json` e `go-test.json` são ignorados pelo Git; um clone limpo contém apenas `.gitkeep` até o comando ser executado.
+O workflow `.github/workflows/ci.yml` executa `make ci` direto (sem publicar artefato de evidência à parte); o resultado fica no log da run do GitHub Actions. `make full-validation`/`.github/workflows/full-validation.yml` continuam publicando `evidence/reports/{policy,security,build,integration}/` como artefato, porque esses diretórios são escritos de verdade pelos próprios gates (`scripts/run-gate.sh`), não por um produtor à parte.
 
 O gate de BDD deve distinguir:
 
@@ -144,8 +143,6 @@ Sem impor ainda um script de CI, os relatórios devem convergir para uma estrutu
 
 ```text
 evidence/reports/
-  bdd-catalog.json            # gerado por make reports/CI; ignorado no clone
-  go-test.json                # gerado por make reports/CI; ignorado no clone
   load-test-summary.json      # k6 via Edge (100 VUs, todas as rotas); make load-test
   load-test-backend-summary.json  # k6 direto no domínio; make load-test-backend
   security/, policy/, build/, integration/  # gerados por make security/policy/build-validation/integration
@@ -163,6 +160,6 @@ Arquivos gerados não substituem uma síntese curta com ambiente, commit, decis�
 - Não há relatório Godog Cucumber/JUnit por tag.
 - `test/k6/load.js` (via Edge, 100 VUs em todas as rotas) e `test/k6/load-backend.js` (direto no domínio, bypass do Edge) existem e têm relatório versionado em `evidence/reports/`; o cenário de pico completo do RNF-03 (`@SCN-RNF03-001`, 15.000 chegadas a 50 RPS/5 min) ainda não tem binding BDD, só a evidência k6 direta -- ver `docs/testing-traceability.md`.
 - Reconciliação e DLQ têm evidência real (T08): worker com testes Testcontainers reais de corte concorrente, repetição, falha parcial e stream interrompido (`services/consolidation/internal/reconciliation`), e comando de reprocessamento de DLQ protegido/auditado. O que falta é só o binding BDD ponta a ponta do cenário completo de 2 minutos de queda com 6.000 lançamentos (`@SCN-RNF02-*`), não a implementação em si.
-- `make reports` produz apenas catálogo e saída JSON do `go test`; esses arquivos são transitórios, ignorados pelo Git e publicados pelo CI.
+- Catálogo BDD e saída do `go test` ficam só no console (`make bdd-parse`, `make ci`); não há mais um artefato JSON agregado publicado pelo CI para esses dois.
 
 Essas lacunas mantêm 56 cenários pendentes, mas não invalidam as 25 tags verificadas nem o catálogo aprovado.

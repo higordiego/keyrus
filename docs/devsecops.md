@@ -6,7 +6,7 @@ O GitHub Actions orquestra os mesmos comandos que os desenvolvedores executam lo
 
 | Command | Prova real neste snapshot | Evidence (Evidência) |
 |---|---|---|
-| `make ci` | generated-code drift, formatação, Buf lint/breaking, build, vet, race tests e catálogo BDD | `evidence/reports/ci/` via `make reports` |
+| `make ci` | generated-code drift, formatação, Buf lint/breaking, build, vet, race tests e catálogo BDD | resultado do `go test`/`bdd-parse` no console; sem artefato dedicado |
 | `make policy` | actionlint, full-SHA Action pins, least privilege, hosted runners, timeouts/concurrency e fixture negativa de unpinned-Action | `evidence/reports/policy/` |
 | `make security` | govulncheck, histórico/worktree do Gitleaks, filesystem/config do Trivy e fixtures controladas negativas de secret/vulnerability | `evidence/reports/security/` |
 | `make build-validation` | dois Go builds idênticos, checksums SHA-256, SBOM CycloneDX/SPDX | `evidence/reports/build/` |
@@ -53,15 +53,15 @@ Não torne essas variáveis verdadeiras apenas para contornar a barreira: uma fe
 
 ## Aplicando proteção na `main` depois
 
-Depois que o repositório se tornar público ou o proprietário possuir um plano que suporte a proteção de branches privadas:
+Depois que o repositório se tornar público ou o proprietário possuir um plano que suporte a proteção de branches privadas, configure manualmente (Settings → Branches → Add rule, ou via `gh api`):
 
 1. Faça push desses workflows e abra um PR para que cada verificação requerida tenha sido reportada pelo menos uma vez.
 2. Verifique a capability do CodeQL/Dependency Review; ative suas variáveis e execute-as se forem ser requeridas.
-3. Execute `scripts/apply-main-protection.sh` para inspecionar o estado atual.
-4. Execute `scripts/apply-main-protection.sh --apply` para exigir todos os core e licensed checks, ou `--apply --core-only` se os recursos licenciados de segurança continuarem indisponíveis.
-5. Execute novamente o comando em modo somente leitura (read-only) e verifique o requerimento do PR, uma aprovação, conversas resolvidas, strict/up-to-date checks e os contextos esperados.
+3. Inspecione o estado atual: `gh api repos/higordiego/keyrus/branches/main/protection`.
+4. Exija status checks estritos (`foundation`, `workflow-policy`, `source-security`, e `dependency-review`/`codeql-go-kotlin`/`codeql-actions` quando os recursos licenciados estiverem disponíveis), 1 aprovação com dismiss em novo push, histórico linear, sem force-push/deleção, e conversas resolvidas -- via `gh api --method PUT repos/higordiego/keyrus/branches/main/protection` com o payload correspondente.
+5. Confira de novo em modo leitura e verifique o requerimento do PR, uma aprovação, conversas resolvidas, strict/up-to-date checks e os contextos esperados.
 
-O script é idempotente e foca apenas em `higordiego/keyrus:main`. Ele não muda a visibilidade, secrets, Actions policy ou configurações de deployment.
+Não muda a visibilidade, secrets, Actions policy ou configurações de deployment por conta própria -- só a proteção da branch.
 
 ## Dependabot e exceções
 

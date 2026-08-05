@@ -19,7 +19,7 @@ TRIVY_VERSION := v0.72.0
 
 export PATH := $(TOOLS_BIN):$(PATH)
 
-.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports load-test load-test-backend smoke up down destroy
+.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse ci policy security build-validation full-validation clean-reports load-test load-test-backend smoke up down destroy
 
 .DEFAULT_GOAL := help
 
@@ -135,10 +135,6 @@ bdd-parse:
 
 clean-reports:
 	find evidence/reports -mindepth 1 ! -name .gitkeep -delete
-
-reports:
-	./scripts/ci-reports.sh
-	go run ./cmd/bddcheck -features features -manifest features/implemented_scenarios.txt -json > evidence/reports/bdd-catalog.json
 
 ci: check-go-version generate-check format-check lint proto-breaking build test integration bdd-parse
 

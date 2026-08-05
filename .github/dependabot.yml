@@ -21,8 +21,39 @@ updates:
       timezone: America/Fortaleza
     open-pull-requests-limit: 5
 
+  # No Dockerfile/Containerfile lives at the repo root -- Dependabot's
+  # docker ecosystem doesn't recurse, so each directory that actually
+  # has one needs its own entry (found via `find . -iname
+  # '*Containerfile*' -o -iname 'Dockerfile*'`).
   - package-ecosystem: docker
-    directory: /
+    directory: /deploy/edge
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:30'
+      timezone: America/Fortaleza
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /deploy/identity
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:30'
+      timezone: America/Fortaleza
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /services/ledger
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:30'
+      timezone: America/Fortaleza
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /services/consolidation
     schedule:
       interval: weekly
       day: monday

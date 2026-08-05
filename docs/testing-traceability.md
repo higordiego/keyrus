@@ -55,8 +55,8 @@ Depois da execução, o relatório deve listar a tag. A ausência da tag na evid
 
 | Evidência | Estado atual |
 |---|---|
-| Catálogo de 14 features/81 tags | Gerado por `make reports`/CI em `evidence/reports/bdd-catalog.json`; ignorado no clone |
-| Saída JSON dos testes Go | Gerada por `make reports`/CI em `evidence/reports/go-test.json`; ignorada no clone |
+| Catálogo de 14 features/81 tags | `make bdd-parse` imprime o resultado no console (`validated 14 features, 81 unique scenarios, 25 implemented`); sem artefato JSON publicado |
+| Saída dos testes Go | `make ci`/`go test ./...` imprime o resultado no console; sem artefato JSON publicado |
 | Resultado comportamental Godog por SCN | 25 tags/30 cenários/165 steps (T02, T04, T06) consomem resultado estruturado por caso e oráculo; Cucumber/JUnit ainda ausente |
 | Bindings reais listados no manifesto | 25 tags (T02, T04, T06); 56 tags pendentes |
 | Integração/Testcontainers | Keycloak, KrakenD, imagens finais Ledger/Consolidation, Collector e fault backend (T02); consumer/projetor de Consolidation (T04/T06) |
