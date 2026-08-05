@@ -27,9 +27,6 @@ jobs:
           cache: true
       - name: Run all materialized gates
         run: make full-validation
-      - name: Rebuild CI evidence
-        if: always()
-        run: make reports
       - name: Publish all evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
