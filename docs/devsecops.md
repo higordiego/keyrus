@@ -41,7 +41,7 @@ Passos de upload de evidências usam `if: always()` e não suprimem os códigos 
 
 ## Capability do GitHub e status de governança
 
-O repositório oficial permanece privado. Em 31-07-2026, a consulta a `repos/higordiego/keyrus-test-arch/branches/main/protection` retornou HTTP 403 porque a proteção de branch para este repositório privado requer GitHub Pro ou uma mudança para visibilidade pública. A decisão escolhida é mantê-lo privado e adiar a proteção; a proteção **não está ativa**.
+O repositório oficial permanece privado. Em 31-07-2026, a consulta a `repos/higordiego/keyrus/branches/main/protection` retornou HTTP 403 porque a proteção de branch para este repositório privado requer GitHub Pro ou uma mudança para visibilidade pública. A decisão escolhida é mantê-lo privado e adiar a proteção; a proteção **não está ativa**.
 
 Code scanning/CodeQL, imposição de Dependency Review, secret scanning, e push protection também são condicionais à visibilidade do repositório e ao plano do GitHub/produtos de segurança disponíveis ao proprietário. Os workflows estão implementados, mas os jobs licenciados permanecem desativados no repositório privado, a menos que a variável correspondente do repositório seja explicitamente configurada após a verificação de capability (capacidade):
 
@@ -61,7 +61,7 @@ Depois que o repositório se tornar público ou o proprietário possuir um plano
 4. Execute `scripts/apply-main-protection.sh --apply` para exigir todos os core e licensed checks, ou `--apply --core-only` se os recursos licenciados de segurança continuarem indisponíveis.
 5. Execute novamente o comando em modo somente leitura (read-only) e verifique o requerimento do PR, uma aprovação, conversas resolvidas, strict/up-to-date checks e os contextos esperados.
 
-O script é idempotente e foca apenas em `higordiego/keyrus-test-arch:main`. Ele não muda a visibilidade, secrets, Actions policy ou configurações de deployment.
+O script é idempotente e foca apenas em `higordiego/keyrus:main`. Ele não muda a visibilidade, secrets, Actions policy ou configurações de deployment.
 
 ## Dependabot e exceções
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repository=higordiego/keyrus-test-arch
+repository=higordiego/keyrus
 branch=main
 mode=check
 licensed=true
