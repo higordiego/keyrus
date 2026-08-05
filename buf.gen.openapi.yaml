@@ -1,3 +1,6 @@
+# json_names_for_fields stays at its default (true): response bodies are
+# always camelCase (protojson default). Query parameters still need
+# snake_case (start_date, end_date) to actually bind; see README/Postman.
 version: v2
 clean: true
 plugins:

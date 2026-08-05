@@ -196,13 +196,13 @@
               { "key": "Authorization", "value": "Bearer {{token}}" }
             ],
             "url": {
-              "raw": "{{edge_base_url}}/v1/entries?pageSize=20",
+              "raw": "{{edge_base_url}}/v1/entries?page_size=20",
               "host": ["{{edge_base_url}}"],
               "path": ["v1", "entries"],
               "query": [
-                { "key": "pageSize", "value": "20" },
-                { "key": "startDate", "value": "2026-07-01", "disabled": true },
-                { "key": "endDate", "value": "2026-08-31", "disabled": true },
+                { "key": "page_size", "value": "20" },
+                { "key": "start_date", "value": "2026-07-01", "disabled": true },
+                { "key": "end_date", "value": "2026-08-31", "disabled": true },
                 { "key": "page_token", "value": "", "disabled": true }
               ]
             },
@@ -298,15 +298,15 @@
               { "key": "Authorization", "value": "Bearer {{token}}" }
             ],
             "url": {
-              "raw": "{{edge_base_url}}/v1/daily-balances?startDate=2026-08-01&endDate=2026-08-05",
+              "raw": "{{edge_base_url}}/v1/daily-balances?start_date=2026-08-01&end_date=2026-08-05",
               "host": ["{{edge_base_url}}"],
               "path": ["v1", "daily-balances"],
               "query": [
-                { "key": "startDate", "value": "2026-08-01" },
-                { "key": "endDate", "value": "2026-08-05" }
+                { "key": "start_date", "value": "2026-08-01" },
+                { "key": "end_date", "value": "2026-08-05" }
               ]
             },
-            "description": "Ajuste `startDate`/`endDate` para o período em que você criou lançamentos. `state` pode vir `PROCESSING` por um instante logo após um `POST /v1/entries` (o Consolidado é atualizado de forma assíncrona via RabbitMQ) antes de virar `UPDATED`; isso é esperado, não um erro."
+            "description": "Ajuste `start_date`/`end_date` para o período em que você criou lançamentos. `state` pode vir `PROCESSING` por um instante logo após um `POST /v1/entries` (o Consolidado é atualizado de forma assíncrona via RabbitMQ) antes de virar `UPDATED`; isso é esperado, não um erro."
           }
         }
       ]
