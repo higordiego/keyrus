@@ -1,4 +1,5 @@
 .tools/
+.claude/
 coverage.out
 evidence/reports/*
 !evidence/reports/.gitkeep
