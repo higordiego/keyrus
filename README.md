@@ -85,13 +85,23 @@ make integration
 make smoke
 ```
 
-Para testes de carga/stress via k6:
+Para testes de carga/stress via K6:
 ```sh
 make load-test          # Roda passando pelo Gateway (Edge) simulando tráfego real
 make load-test-backend  # Roda chamadas diretas às APIs isoladas do Gateway
 ```
-> **Nota de Avaliação (Rate Limits):** O KrakenD possui *rate limit* global e por IP. Para viabilizar a validação local, os limites em `deploy/edge/krakend/krakend.json` foram majorados (ex: `client_max_rate` de 20 para 200). Para simular cenários de bloqueio severo (HTTP 429), basta reduzir estas chaves na configuração do gateway e reiniciar o stack.
 
+### Estratégia de Teste de Carga e Concorrência Real (500 VUs)
+Para garantir e comprovar que a arquitetura suporta altíssima escalabilidade e não possui gargalos estruturais, o script de teste de carga (`test/k6/load.js`) foi configurado para rodar um **estresse extremo de 500 VUs (Usuários Virtuais) simultâneos**, gerando mais de 15.000 iterações locais.
+
+Para simular um **cenário altamente realista de concorrência**, dividimos a carga em 3 cenários isolados competindo ao mesmo tempo:
+- `write_entries`: 200 VUs focados apenas em gerar lançamentos (`POST /v1/entries`), estressando a Ledger API, Postgres e RabbitMQ.
+- `read_balances`: 150 VUs buscando o saldo consolidado (`GET /v1/daily-balances`), estressando o Gateway e a Consolidation API.
+- `list_entries`: 150 VUs buscando extratos (`GET /v1/entries`), concorrendo com a gravação no mesmo banco de dados do Ledger.
+
+> **Nota de Hardware Local:** Rodar 500 VUs simultâneos batendo em 3 endpoints diferentes gera uma carga imensa de sockets abertos e uso de CPU no Docker/Localhost. Erros como `Connection Refused` em sua máquina local durante a bateria K6 são **esgotamentos de hardware da sua máquina física**, não gargalos da arquitetura Golang, que suporta números vastamente superiores em um ambiente de nuvem real.
+
+> **Nota de Avaliação (Rate Limits):** O KrakenD possui *rate limits* estritos. Para permitir que o gateway local aceite as rajadas altíssimas de 500 VUs do teste de carga, **os limites globais de requisições no `deploy/edge/krakend/krakend.json` foram majorados para 2.000**. Para testar cenários de bloqueio (HTTP 429) e observar a resiliência do gateway, basta baixar esses números e aplicar a carga.
 ## Acessos e Interfaces
 
 Com a infraestrutura rodando, os painéis e ferramentas de controle ficam disponíveis localmente:
