@@ -126,5 +126,15 @@ export default function (data) {
         'read status is 200': (r) => r.status === 200,
     });
 
+    // 3. Listagem (Ledger API)
+    let listRes = http.get(`${BASE_URL}/v1/entries?limit=10`, readParams);
+    if (listRes.status !== 200 && __ITER === 0) {
+        console.error(`List failed! Status: ${listRes.status}, Body: ${listRes.body}`);
+    }
+    
+    check(listRes, {
+        'list status is 200': (r) => r.status === 200,
+    });
+
     sleep(1);
 }
