@@ -8,7 +8,7 @@ import (
 
 	"github.com/cucumber/godog"
 	"github.com/cucumber/godog/formatters"
-	messages "github.com/cucumber/messages/go/v21"
+	messages "github.com/cucumber/messages/go/v34"
 	"github.com/higordiegoti/keyrus/internal/bddcatalog"
 )
 
