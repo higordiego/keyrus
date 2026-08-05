@@ -85,6 +85,13 @@ make integration
 make smoke
 ```
 
+Para testes de carga/stress via k6:
+```sh
+make load-test          # Roda passando pelo Gateway (Edge) simulando tráfego real
+make load-test-backend  # Roda chamadas diretas às APIs isoladas do Gateway
+```
+> **Nota de Avaliação (Rate Limits):** O KrakenD possui *rate limit* global e por IP. Para viabilizar a validação local, os limites em `deploy/edge/krakend/krakend.json` foram majorados (ex: `client_max_rate` de 20 para 200). Para simular cenários de bloqueio severo (HTTP 429), basta reduzir estas chaves na configuração do gateway e reiniciar o stack.
+
 ## Acessos e Interfaces
 
 Com a infraestrutura rodando, os painéis e ferramentas de controle ficam disponíveis localmente:
