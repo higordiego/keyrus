@@ -13,9 +13,9 @@ keywords = ["SECURITY_TEST_TOKEN_"]
 description = "Generated local tools, evidence and dev-only secrets/certs are outside the versioned source boundary (all three are .gitignore'd -- see .gitignore's secrets/ entry -- so they can never reach git history or a public clone; the `dir` scan mode still walks them on disk, which is what this allowlist is for)"
 paths = ['''(^|/)\.tools/''', '''(^|/)evidence/reports/''', '''(^|/)secrets/''']
 
-# Found running the full-history gitleaks scan T12 requires before any repo
-# visibility change (docs/testing-traceability.md / T12 fixup). Every entry
-# below was manually reviewed: none is a real credential, cloud key or
+# Found running the full-history gitleaks scan required before any repo
+# visibility change (T12 fixup). Every entry below was manually reviewed:
+# none is a real credential, cloud key or
 # production secret. Each is either a published, dev-only placeholder value
 # already referenced openly throughout docker-compose.yaml/README.md/the
 # Keycloak realm fixture, a content checksum gitleaks' entropy heuristic

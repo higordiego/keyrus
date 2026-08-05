@@ -178,7 +178,7 @@ curl -X GET "http://localhost:8080/v1/daily-balances?start_date=2026-08-05&end_d
 * **Portas Ocupadas:** o Docker expõe 5432 (Postgres), 5672/15672/15692 (RabbitMQ), 8080 (KrakenD), 8443 (Keycloak), 9090 (Prometheus), 16686/4317 (Jaeger) e 3000 (Grafana). Feche outros serviços locais se tiver conflitos.
 * **Erro 401 Unauthorized:** O token tem duração curta ou você não enviou os `scopes` obrigatórios. Gere o token novamente garantindo a passagem do parâmetro `scope`.
 * **Erros de SSL/TLS (Certificate Expired):** Os certificados locais têm validade curta. Limpe a pasta `secrets/certs`, rode novamente o `generate-compose-secrets.go` e reinicie os containers.
-* **O Saldo Consolidado não está atualizando:** Verifique se os contêineres `ledger-outbox-publisher` e `consolidation-consumer` não morreram, fazendo as mensagens travarem na fila. Analisando esse ponto, consulte os alertas e acesse a documentação do [Runbook do Broker](docs/runbooks/broker.md).
+* **O Saldo Consolidado não está atualizando:** verifique se os contêineres `ledger-outbox-publisher` e `consolidation-consumer` não morreram, fazendo as mensagens travarem na fila.
 
 ## Documentação Técnica
 
@@ -186,11 +186,5 @@ Para se aprofundar nas decisões arquiteturais e nas evidências do sistema, con
 
 | Documento | Descrição |
 | --- | --- |
-| [Legado e Arquitetura](docs/legado-e-arquitetura.md) | O sistema legado e seus incidentes reais, a arquitetura alvo e por quê, o plano de migração e a tabela de-para com a evidência de cada correção. |
-| [Estratégia de Testes](docs/testing-strategy.md) | Diretrizes e padrões adotados para garantir a qualidade do software. |
-| [Rastreabilidade de Testes](docs/testing-traceability.md) | Mapeamento entre cenários de teste, requisitos e evidências. |
-| [Contratos de Integração](docs/contracts.md) | Definição de eventos assíncronos e contratos entre serviços. |
-| [DevSecOps](docs/devsecops.md) | Práticas de segurança, pipelines e verificações automatizadas. |
+| [Legado e Arquitetura](docs/legado-e-arquitetura.md) | O sistema legado hipotético e seus incidentes, a arquitetura alvo e por quê, o plano de migração e a relação entre cada decisão e sua evidência. |
 | [Estimativas Cloud](docs/custos/estimativas-cloud.md) | Projeção de custos e trade-offs para AWS, GCP e Azure. |
-
-As **Decisões de Arquitetura (ADRs)** estão detalhadas individualmente (ex: [ADR-004 - Keycloak](docs/adrs/ADR-004-keycloak.md) e [ADR-011 - KrakenD Gateway](docs/adrs/ADR-011-krakend-gateway.md)). Para procedimentos operacionais de resolução de falhas, verifique os respectivos manuais, como o [Runbook de DLQ](docs/runbooks/dlq.md) e o [Runbook de Watermark](docs/runbooks/watermark.md).

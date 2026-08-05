@@ -14,4 +14,4 @@ Apenas o commit mais recente na `main` tem suporte durante o architecture challe
 
 `make security` varre (scans) vulnerabilidades Go alcançáveis (reachable), o histórico do repositório, o working tree, dependências, e a configuração. `make policy` impõe referências imutáveis de Action e a política de workflow de privilégio mínimo (least-privilege). Vulnerabilidades HIGH/CRITICAL alcançáveis, secrets confirmadas, e configuração insegura crítica bloqueiam alterações.
 
-As exceções devem seguir o [docs/security-exceptions.md](docs/security-exceptions.md); descobertas de secret não podem ser perdoadas (waived).
+Qualquer exceção temporária de gate exige owner nomeado, justificativa, mitigação, validade e critério de remoção, registrada em uma issue ou registro de PR; descobertas de secret não podem ser perdoadas (waived).

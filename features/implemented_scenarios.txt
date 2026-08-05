@@ -34,7 +34,6 @@
 # @SCN-RNF02-001, @SCN-RNF02-002, @SCN-RNF04-002, @SCN-RNF04-003 and @SCN-RNF09-003
 # describe the full 2-minute-outage / 6,000-entry recovery scenario (T08 Aceite).
 # They were listed here without any step binding at all (42 undefined steps,
-# `TestImplementedScenarios` failing) -- not "pending", entirely unbound. T08's own
+# `TestImplementedScenarios` failing), not "pending", entirely unbound. T08's own
 # "Fora do escopo" note places the full 5-minute/6000-entry recovery load under T11,
-# so these stay out of the manifest until that harness exists for real. Track under
-# docs/testing-traceability.md.
+# so these stay out of the manifest until that harness exists for real.

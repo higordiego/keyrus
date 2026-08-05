@@ -8,4 +8,4 @@ O aceite de runtime está em `test/integration/runtime_e2e_test.go`, com Keycloa
 KrakenD e adapters reais. Uma tag T02 só deve voltar ao manifesto quando o
 binding Godog dirigir esse mesmo runtime real.
 
-Antes de registrar handlers, consulte a [estratégia de testes](../../../docs/testing-strategy.md), que documenta resolução package-wide, formatos aceitos e restrições fail-closed do guard.
+Antes de registrar handlers, consulte [`test/README.md`](../../README.md), que documenta resolução package-wide, formatos aceitos e restrições fail-closed do guard.

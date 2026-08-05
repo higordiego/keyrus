@@ -1,11 +1,10 @@
 #!/bin/sh
 # Smoke test: losing one instance of a stateless service must not corrupt
 # state or block recovery. This Compose stack runs exactly one instance of
-# each service (no `replicas: N` -- that is a Swarm-only concept, out of
-# scope for this pass; see docs/runbooks/replica-loss.md), so "replica
-# loss" here means "the single instance dies and comes back", proving the
-# service is stateless and safe to restart -- the same property real
-# replica loss depends on.
+# each service (no `replicas: N`, a Swarm-only concept, out of scope for
+# this pass), so "replica loss" here means "the single instance dies and
+# comes back", proving the service is stateless and safe to restart, the
+# same property real replica loss depends on.
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

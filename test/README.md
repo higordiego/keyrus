@@ -1,10 +1,6 @@
 # Testes
 
-Este diretório concentra o harness executável. A documentação prática está separada para não duplicar os cenários:
-
-- [Estratégia, execução e evidências](../docs/testing-strategy.md)
-- [Rastreabilidade dos 81 cenários](../docs/testing-traceability.md)
-- [Features oficiais](../features/)
+Este diretório concentra o harness executável. Os cenários oficiais vivem em [`features/`](../features/); este README documenta como executá-los e o que o estado atual da suíte comprova.
 
 ## Estado atual
 
