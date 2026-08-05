@@ -19,7 +19,7 @@ TRIVY_VERSION := v0.72.0
 
 export PATH := $(TOOLS_BIN):$(PATH)
 
-.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports load-test load-test-backend smoke
+.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports load-test load-test-backend smoke up down destroy
 
 .DEFAULT_GOAL := help
 
@@ -28,11 +28,16 @@ help:
 	@echo "========================================"
 	@echo "       Keyrus Makefile Help             "
 	@echo "========================================"
+	@echo "Comando Principal (comece por aqui):"
+	@echo "  make up            - Sobe o ambiente completo do zero (1 comando so)"
+	@echo "  make down          - Para os containers (mantem os dados)"
+	@echo "  make destroy       - Apaga containers, volumes e dados (recomeca do zero)"
+	@echo ""
 	@echo "Comandos de Teste e Validação:"
 	@echo "  make test          - Roda a suíte de testes unitários rápidos"
 	@echo "  make integration   - Sobe infra básica e roda testes de integração"
 	@echo "  make bdd           - Roda os testes comportamentais (Godog/Cucumber)"
-	@echo "  make load-test     - Roda testes de carga/stress (K6)"
+	@echo "  make load-test     - Simula 100 usuarios em todas as rotas via Edge (K6)"
 	@echo "  make ci            - Roda o fluxo completo de CI (format, lint, build, testes)"
 	@echo ""
 	@echo "Comandos de Construção e Código:"
@@ -163,3 +168,38 @@ smoke:
 	./scripts/smoke/clean-startup.sh
 	./scripts/smoke/restart-isolation.sh
 	./scripts/smoke/replica-loss.sh
+
+# up e o unico comando que uma pessoa nova no projeto precisa rodar: instala
+# ferramentas, compila, gera os certificados/segredos locais se ainda nao
+# existirem e sobe a stack inteira (apps + observabilidade). Repetir `make up`
+# depois de um `make down` e seguro e rapido -- os passos de bootstrap sao
+# incrementais e os certificados so sao gerados de novo se secrets/ nao
+# existir.
+up: bootstrap
+	@test -d secrets/certs || { \
+		echo "==> Gerando certificados e segredos locais (primeira vez)..."; \
+		go run scripts/generate-compose-secrets.go; \
+	}
+	@echo "==> Subindo a stack completa (aplicacao + observabilidade)..."
+	docker compose --profile app --profile observability up -d --build
+	@echo ""
+	@echo "========================================"
+	@echo " Stack no ar! Acessos disponiveis:"
+	@echo "========================================"
+	@echo " API (KrakenD)       : http://localhost:8080"
+	@echo " Login (Keycloak)    : https://localhost:8443  (admin / admin)"
+	@echo " Metricas (Grafana)  : http://localhost:3000   (admin / admin)"
+	@echo " Prometheus          : http://localhost:9090"
+	@echo " Traces (Jaeger)     : http://localhost:16686"
+	@echo " Filas (RabbitMQ)    : http://localhost:15672  (cashflow / secret)"
+	@echo "========================================"
+	@echo " Para validar que esta tudo funcionando : make smoke"
+	@echo " Para parar (mantendo os dados)          : make down"
+	@echo " Para apagar tudo e recomecar do zero    : make destroy"
+	@echo "========================================"
+
+down:
+	docker compose --profile app --profile observability --profile load-test down
+
+destroy:
+	docker compose --profile app --profile observability --profile load-test down -v --remove-orphans
