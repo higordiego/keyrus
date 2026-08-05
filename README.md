@@ -1,7 +1,5 @@
 # Fluxo de Caixa para Comerciantes
 
-Fala pessoal, tudo bem?
-
 Boas-vindas ao sistema de controle de fluxo de caixa para comerciantes. A ideia é construir um motor financeiro assíncrono e resiliente. O objetivo principal é muito claro: registrar débitos e créditos com segurança e garantir que o comerciante veja seu saldo diário. E o mais importante: se a leitura do saldo cair, a gravação de novos lançamentos nunca pode ser afetada.
 
 Toda a arquitetura, decisões técnicas e diagramas estão na pasta [`docs/`](docs/). Abaixo explico como o projeto funciona e como rodar tudo na sua máquina.
@@ -126,6 +124,4 @@ curl -X GET "http://localhost:8080/v1/daily-balances?date=2026-08-05" \
 * **Portas Ocupadas:** O Docker usa as portas 8080, 5432 e 5672. Feche outros serviços locais se tiver conflitos.
 * **Erro 401 Unauthorized:** O token tem duração curta ou você não enviou os `scopes` obrigatórios. Gere o token novamente garantindo a passagem do parâmetro `scope`.
 * **Erros de SSL/TLS (Certificate Expired):** Os certificados locais têm validade curta. Limpe a pasta `secrets/certs`, rode novamente o `generate-compose-secrets.go` e reinicie os containers.
-* **O Saldo Consolidado não está atualizando:** Verifique se os contêineres `ledger-outbox-publisher` e `consolidation-consumer` não morreram, fazendo as mensagens travarem na fila. Qualquer dúvida, consulte os alertas e acesse a documentação em [`docs/runbooks/`](docs/runbooks/).
-
-Qualquer dúvida, só chamar.
+* **O Saldo Consolidado não está atualizando:** Verifique se os contêineres `ledger-outbox-publisher` e `consolidation-consumer` não morreram, fazendo as mensagens travarem na fila. Analisando esse ponto, consulte os alertas e acesse a documentação em [`docs/runbooks/`](docs/runbooks/).
