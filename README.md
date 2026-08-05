@@ -58,6 +58,30 @@ flowchart TB
 
 Para rodar o projeto, você vai precisar de Go 1.26.5, Docker e Docker Compose (e GNU Make).
 
+### Caminho rápido (recomendado)
+
+Um único comando cuida de tudo -- instala as ferramentas, compila, gera os
+certificados/segredos locais (se ainda não existirem) e sobe a stack inteira
+(APIs, bancos, filas, identidade e o stack de observabilidade):
+
+```sh
+make up
+```
+
+Ao final ele imprime os endereços e credenciais de cada painel (Grafana,
+Keycloak, Jaeger, Prometheus, RabbitMQ). Repetir `make up` depois de um `make
+down` é rápido e seguro -- os passos são incrementais e os certificados só
+são gerados de novo se a pasta `secrets/` não existir.
+
+```sh
+make down      # para os containers, mantém os dados (volumes)
+make destroy   # apaga containers, volumes e rede -- recomeça do zero
+```
+
+### Passo a passo manual (o que o `make up` faz por baixo dos panos)
+
+Se preferir rodar cada etapa você mesmo:
+
 1. **Baixe as ferramentas e prepare o código:**
 ```sh
 make bootstrap
@@ -70,14 +94,12 @@ go run scripts/generate-compose-secrets.go
 
 3. **Suba a infraestrutura completa:**
 ```sh
-docker-compose up -d --build
-```
-
-Isso vai iniciar os bancos de dados, filas, identidade e as APIs.
-Para subir com o stack completo de monitoramento (Prometheus, Jaeger, Grafana):
-```sh
 docker compose --profile app --profile observability up -d --build
 ```
+
+Isso vai iniciar os bancos de dados, filas, identidade, as APIs e o stack de
+monitoramento (Prometheus, Jaeger, Grafana). Se quiser subir só a aplicação,
+sem observabilidade, omita `--profile observability`.
 
 Para validar a integridade e os fluxos, rode os testes automatizados:
 ```sh
@@ -91,17 +113,18 @@ make load-test          # Roda passando pelo Gateway (Edge) simulando tráfego r
 make load-test-backend  # Roda chamadas diretas às APIs isoladas do Gateway
 ```
 
-### Estratégia de Teste de Carga e Concorrência Real (500 VUs)
-Para garantir e comprovar que a arquitetura suporta altíssima escalabilidade e não possui gargalos estruturais, o script de teste de carga (`test/k6/load.js`) foi configurado para rodar um **estresse extremo de 500 VUs (Usuários Virtuais) simultâneos**, gerando mais de 15.000 iterações locais.
+### Estratégia de Teste de Carga (100 usuários, todas as rotas)
+O script `test/k6/load.js` simula **100 usuários virtuais (VUs) concorrentes**, cada um executando a jornada completa de um comerciante em sequência, contra **todas as 5 rotas públicas** da API (via KrakenD):
 
-Para simular um **cenário altamente realista de concorrência**, dividimos a carga em 3 cenários isolados competindo ao mesmo tempo:
-- `write_entries`: 200 VUs focados apenas em gerar lançamentos (`POST /v1/entries`), estressando a Ledger API, Postgres e RabbitMQ.
-- `read_balances`: 150 VUs buscando o saldo consolidado (`GET /v1/daily-balances`), estressando o Gateway e a Consolidation API.
-- `list_entries`: 150 VUs buscando extratos (`GET /v1/entries`), concorrendo com a gravação no mesmo banco de dados do Ledger.
+1. `POST /v1/entries` -- cria um lançamento de crédito.
+2. `GET /v1/entries/{entry_id}` -- consulta o lançamento recém-criado.
+3. `GET /v1/entries` -- lista os lançamentos do comerciante.
+4. `GET /v1/daily-balances` -- consulta o saldo diário consolidado.
+5. `POST /v1/entries/{entry_id}/reversals` -- estorna o lançamento, fechando o ciclo sem inflar o saldo a cada iteração.
 
-> **Nota de Hardware Local:** Rodar 500 VUs simultâneos batendo em 3 endpoints diferentes gera uma carga imensa de sockets abertos e uso de CPU no Docker/Localhost. Erros como `Connection Refused` em sua máquina local durante a bateria K6 são **esgotamentos de hardware da sua máquina física**, não gargalos da arquitetura Golang, que suporta números vastamente superiores em um ambiente de nuvem real.
+Última execução local (rampa de 15s → sustentação de 40s com 100 VUs → rampa de descida de 10s), evidência em `evidence/reports/load-test-summary.json`: **23.015 checks, 100% de sucesso nas 5 rotas, `http_req_failed` em 0%, p95 de ~89ms**. Rode com `make load-test`.
 
-> **Nota de Avaliação (Rate Limits):** O KrakenD possui *rate limits* estritos. Para permitir que o gateway local aceite as rajadas altíssimas de 500 VUs do teste de carga, **os limites globais de requisições no `deploy/edge/krakend/krakend.json` foram majorados para 2.000**. Para testar cenários de bloqueio (HTTP 429) e observar a resiliência do gateway, basta baixar esses números e aplicar a carga.
+> **Nota sobre o Rate Limit do Gateway:** como todos os VUs do k6 saem do mesmo IP (o container/host que roda o teste), este teste também mede o limite por IP do KrakenD (`client_max_rate` em `deploy/edge/krakend/krakend.json`, hoje em 2.000/min -- suficiente para não interferir num teste de 100 VUs). Para medir a capacidade real do domínio (Ledger/Consolidation) sem essa camada, use `make load-test-backend`, que bate direto nas APIs -- essa é a distinção documentada no RNF-03 (`docs/testing-traceability.md`).
 ## Acessos e Interfaces
 
 Com a infraestrutura rodando, os painéis e ferramentas de controle ficam disponíveis localmente:
@@ -153,7 +176,7 @@ curl -X GET "http://localhost:8080/v1/daily-balances?start_date=2026-08-05&end_d
 
 ## Riscos e Pontos de Atenção (Troubleshooting)
 
-* **Portas Ocupadas:** O Docker usa as portas 8080, 5432 e 5672. Feche outros serviços locais se tiver conflitos.
+* **Portas Ocupadas:** o Docker expõe 5432 (Postgres), 5672/15672/15692 (RabbitMQ), 8080 (KrakenD), 8443 (Keycloak), 9090 (Prometheus), 16686/4317 (Jaeger) e 3000 (Grafana). Feche outros serviços locais se tiver conflitos.
 * **Erro 401 Unauthorized:** O token tem duração curta ou você não enviou os `scopes` obrigatórios. Gere o token novamente garantindo a passagem do parâmetro `scope`.
 * **Erros de SSL/TLS (Certificate Expired):** Os certificados locais têm validade curta. Limpe a pasta `secrets/certs`, rode novamente o `generate-compose-secrets.go` e reinicie os containers.
 * **O Saldo Consolidado não está atualizando:** Verifique se os contêineres `ledger-outbox-publisher` e `consolidation-consumer` não morreram, fazendo as mensagens travarem na fila. Analisando esse ponto, consulte os alertas e acesse a documentação do [Runbook do Broker](docs/runbooks/broker.md).
