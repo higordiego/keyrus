@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "b6e2a6b0-2f0a-4c7a-9d3a-0f2e9b7a2c11",
     "name": "Fluxo de Caixa para Comerciantes",
-    "description": "Collection real e testada manualmente contra o stack local (`docker compose up`). Cobre autenticação (Keycloak via Edge), o Ledger (criar/listar/consultar lançamento, estornar) e o Consolidado (saldo diário), mais um teste rápido de isolamento multi-tenant.\n\nGerada a partir do contrato OpenAPI publicado em `api/openapi/cashflow-public-v1.swagger.json` e verificada rodando cada requisição contra o stack ao vivo antes de ser commitada -- não é um chute baseado só no código.\n\n## Como usar\n1. `go run scripts/generate-compose-secrets.go` (se ainda não gerou os certificados locais).\n2. `docker compose up -d --build` (perfil `app` por padrão).\n3. Importe esta collection no Postman.\n4. Rode **1. Autenticação > Obter Token (merchant-a)** primeiro -- ele salva o token na variável de collection `token`, usada automaticamente por todas as outras requisições.\n5. Rode o resto na ordem das pastas. **2. Ledger > Criar Lançamento** salva o `entryId` criado na variável `entry_id`, usada por Consultar/Estornar.\n\nO script de pré-requisição no nível da collection adiciona `Host: edge.cashflow.local` e `X-Forwarded-Proto: https` em toda chamada pelo Edge (porta 8080) -- sem isso o KrakenD faz `ssl_redirect` (301) porque não há um balanceador terminando TLS na frente dele localmente. Ver `README.md` raiz, seção \"Autenticação e Exemplos Práticos\", para o mesmo fluxo em `curl`.",
+    "description": "Collection real e testada manualmente contra o stack local (`docker compose up`). Cobre autenticação (Keycloak via Edge), o Ledger (criar/listar/consultar lançamento, estornar) e o Consolidado (saldo diário), mais um teste rápido de isolamento multi-tenant.\n\nGerada a partir do contrato OpenAPI publicado em `api/openapi/cashflow-public-v1.swagger.json` e verificada rodando cada requisição contra o stack ao vivo antes de ser commitada, não é um chute baseado só no código.\n\n## Como usar\n1. `go run scripts/generate-compose-secrets.go` (se ainda não gerou os certificados locais).\n2. `docker compose up -d --build` (perfil `app` por padrão).\n3. Importe esta collection no Postman.\n4. Rode **1. Autenticação > Obter Token (merchant-a)** primeiro; ele salva o token na variável de collection `token`, usada automaticamente por todas as outras requisições.\n5. Rode o resto na ordem das pastas. **2. Ledger > Criar Lançamento** salva o `entryId` criado na variável `entry_id`, usada por Consultar/Estornar.\n\nO script de pré-requisição no nível da collection adiciona `Host: edge.cashflow.local` e `X-Forwarded-Proto: https` em toda chamada pelo Edge (porta 8080); sem isso o KrakenD faz `ssl_redirect` (301) porque não há um balanceador terminando TLS na frente dele localmente. Ver `README.md` raiz, seção \"Autenticação e Exemplos Práticos\", para o mesmo fluxo em `curl`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -80,7 +80,7 @@
               "host": ["{{keycloak_base_url}}"],
               "path": ["realms", "cashflow", "protocol", "openid-connect", "token"]
             },
-            "description": "Vai direto no Keycloak (não passa pelo Edge), igual ao fluxo real do app do comerciante. `scope` precisa ser explícito -- sem ele o Keycloak emite um token válido mas sem nenhum escopo, e toda rota protegida rejeita com 401.\n\nEsta requisição usa TLS auto-assinado; a opção \"SSL certificate verification\" precisa estar desligada nas Settings do Postman (ou a requisição falha com erro de certificado)."
+            "description": "Vai direto no Keycloak (não passa pelo Edge), igual ao fluxo real do app do comerciante. `scope` precisa ser explícito; sem ele o Keycloak emite um token válido mas sem nenhum escopo, e toda rota protegida rejeita com 401.\n\nEsta requisição usa TLS auto-assinado; a opção \"SSL certificate verification\" precisa estar desligada nas Settings do Postman (ou a requisição falha com erro de certificado)."
           }
         },
         {
@@ -172,7 +172,7 @@
               "host": ["{{edge_base_url}}"],
               "path": ["v1", "entries"]
             },
-            "description": "`Idempotency-Key` usa a variável dinâmica `{{$guid}}` do Postman -- um GUID novo a cada envio manual (\"Send\"), então repetir a requisição cria um lançamento novo, não reaplica o mesmo. Para testar idempotência de verdade, copie o valor gerado e cole fixo no header antes de reenviar: a segunda resposta deve trazer o mesmo `entryId`, sem duplicar o saldo.\n\n`businessDate` aceita `YYYY-MM-DD`; ajuste para a data de hoje se necessário -- o servidor valida contra o calendário/fuso do comerciante (D-30/D-31)."
+            "description": "`Idempotency-Key` usa a variável dinâmica `{{$guid}}` do Postman, um GUID novo a cada envio manual (\"Send\"), então repetir a requisição cria um lançamento novo, não reaplica o mesmo. Para testar idempotência de verdade, copie o valor gerado e cole fixo no header antes de reenviar: a segunda resposta deve trazer o mesmo `entryId`, sem duplicar o saldo.\n\n`businessDate` aceita `YYYY-MM-DD`; ajuste para a data de hoje se necessário; o servidor valida contra o calendário/fuso do comerciante (D-30/D-31)."
           }
         },
         {
@@ -268,7 +268,7 @@
               "host": ["{{edge_base_url}}"],
               "path": ["v1", "entries", "{{entry_id}}", "reversals"]
             },
-            "description": "Cria uma compensação (débito) referenciando o lançamento original -- o registro original nunca é alterado, só ganha um `reversalEntryId` na leitura. Rodar de novo com o mesmo `entry_id` deve dar 409/erro de conflito (só um estorno por lançamento é permitido)."
+            "description": "Cria uma compensação (débito) referenciando o lançamento original; o registro original nunca é alterado, só ganha um `reversalEntryId` na leitura. Rodar de novo com o mesmo `entry_id` deve dar 409/erro de conflito (só um estorno por lançamento é permitido)."
           }
         }
       ]
@@ -322,7 +322,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('404 ou 403 -- merchant-b nao acessa recurso de merchant-a', function () {",
+                  "pm.test('404 ou 403: merchant-b nao acessa recurso de merchant-a', function () {",
                   "    pm.expect([403, 404]).to.include(pm.response.code);",
                   "});"
                 ]
@@ -339,7 +339,7 @@
               "host": ["{{edge_base_url}}"],
               "path": ["v1", "entries", "{{entry_id}}"]
             },
-            "description": "Prova de isolamento por tenant: pega o `entry_id` que pertence a merchant-a (criado na pasta 2) e tenta acessá-lo autenticado como merchant-b. Deve dar 403 ou 404, nunca 200 -- resposta anti-enumeração, não deve revelar se o ID existe ou não para quem não é o dono.\n\nRode \"1. Autenticação > Obter Token (merchant-b)\" e \"2. Ledger > Criar Lançamento\" (como merchant-a) antes desta."
+            "description": "Prova de isolamento por tenant: pega o `entry_id` que pertence a merchant-a (criado na pasta 2) e tenta acessá-lo autenticado como merchant-b. Deve dar 403 ou 404, nunca 200; resposta anti-enumeração, não deve revelar se o ID existe ou não para quem não é o dono.\n\nRode \"1. Autenticação > Obter Token (merchant-b)\" e \"2. Ledger > Criar Lançamento\" (como merchant-a) antes desta."
           }
         }
       ]

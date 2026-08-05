@@ -11,7 +11,7 @@ import (
 // streamPlan scripts one StreamEntriesAtCut call: either a connection-level
 // failure, or a receiver that yields `entries` and, if failAt >= 0, errors
 // with `recvErr` right after emitting entries[:failAt] instead of reaching
-// io.EOF -- simulating a stream that breaks mid-way.
+// io.EOF, simulating a stream that breaks mid-way.
 type streamPlan struct {
 	connectErr error
 	entries    []ledgerrpc.Entry

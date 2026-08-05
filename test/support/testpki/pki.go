@@ -41,7 +41,7 @@ func New(directory string) (Bundle, error) {
 // exists for scripts/generate-compose-secrets.go: that script documents
 // itself in the README as the one-time setup step before a `docker compose
 // up` meant to run as a developer's local environment for an entire working
-// session, potentially many hours -- New's 2-hour window silently expired
+// session, potentially many hours. New's 2-hour window silently expired
 // mid-session (a real incident found while gathering T11 load evidence:
 // every authenticated request started failing TLS verification once the CA
 // aged past its NotAfter). Automated test callers should keep using New;

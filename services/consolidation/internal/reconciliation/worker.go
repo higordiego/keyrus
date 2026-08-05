@@ -36,8 +36,8 @@ func NewWorker(pool *pgxpool.Pool, source LedgerSource) *Worker {
 }
 
 // SetMetrics attaches the domain metrics recorder. Left unset, Reconcile
-// keeps working exactly as before -- RecordRun is only called when metrics
-// is non-nil -- so existing callers (including every test in this package)
+// keeps working exactly as before: RecordRun is only called when metrics
+// is non-nil, so existing callers (including every test in this package)
 // are unaffected.
 func (w *Worker) SetMetrics(metrics *Metrics) { w.metrics = metrics }
 

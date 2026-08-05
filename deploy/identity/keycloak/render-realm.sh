@@ -70,7 +70,7 @@ case "$rendered" in
 esac
 
 # OUTPUT names the import file itself. A destination that resolves to a
-# directory -- directly or through a symlink -- would silently turn the rename
+# directory, directly or through a symlink, would silently turn the rename
 # into a write *inside* that directory, so the caller would be told the realm
 # was written while the requested path still holds no credential.
 if [ -d "$OUTPUT" ]; then

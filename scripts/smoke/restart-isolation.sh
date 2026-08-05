@@ -37,7 +37,7 @@ status=$(docker compose exec -T ledger-api wget -qO- -S \
     --header="Content-Type: application/json" --post-data='{}' \
     "http://127.0.0.1:8081/v1/entries" 2>&1 | grep "HTTP/" | grep -o '[0-9][0-9][0-9]' | head -1 || echo "000")
 case "$status" in
-    5*|000) echo "FAIL: POST /v1/entries returned $status while Consolidation was down -- Ledger was affected"; exit 1 ;;
+    5*|000) echo "FAIL: POST /v1/entries returned $status while Consolidation was down, Ledger was affected"; exit 1 ;;
     *) echo "  OK   ledger-api POST /v1/entries still answers ($status) with Consolidation down" ;;
 esac
 

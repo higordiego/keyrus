@@ -156,7 +156,7 @@ load-test:
 	k6 run --summary-export=evidence/reports/load-test-summary.json test/k6/load.js
 
 load-test-backend:
-	@echo "Running K6 backend-direct load test (bypasses the KrakenD edge rate limit -- see test/k6/load-backend.js)..."
+	@echo "Running K6 backend-direct load test (bypasses the KrakenD edge rate limit, see test/k6/load-backend.js)..."
 	@mkdir -p evidence/reports
 	docker compose --profile load-test run --rm k6-backend
 
@@ -168,7 +168,7 @@ smoke:
 # up e o unico comando que uma pessoa nova no projeto precisa rodar: instala
 # ferramentas, compila, gera os certificados/segredos locais se ainda nao
 # existirem e sobe a stack inteira (apps + observabilidade). Repetir `make up`
-# depois de um `make down` e seguro e rapido -- os passos de bootstrap sao
+# depois de um `make down` e seguro e rapido, os passos de bootstrap sao
 # incrementais e os certificados so sao gerados de novo se secrets/ nao
 # existir.
 up: bootstrap

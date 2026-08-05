@@ -7,7 +7,7 @@
 # The key is minted straight into a private (0600) temporary file; only its
 # path ever crosses a process boundary as an environment value, never the key
 # bytes themselves. That keeps the key out of any build log, shell trace, or
-# `make -n` dry-run output -- unlike a Makefile variable substituted into a
+# `make -n` dry-run output, unlike a Makefile variable substituted into a
 # recipe line, which `make` echoes by default even during a dry run.
 set -eu
 

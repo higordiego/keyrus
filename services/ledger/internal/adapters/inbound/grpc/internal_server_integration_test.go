@@ -20,7 +20,7 @@ import (
 // instead of `entry_id` and a text `entry_type` instead of an int32 enum).
 // Both always failed against real PostgreSQL, invisibly, because every
 // other test in this repository exercises the internal gRPC contract
-// through a fake ledgerrpc.Handler -- this is the one test that runs the
+// through a fake ledgerrpc.Handler; this is the one test that runs the
 // real Postgres-backed InternalServer end to end.
 func TestInternalServerReadsRealSchema(t *testing.T) {
 	ctx := context.Background()

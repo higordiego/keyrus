@@ -10,7 +10,7 @@
 //
 // Second, integrity is attested with a key the file does not carry. The
 // verifying process mints an ephemeral key and hands it to the real E2E it
-// spawns only through the path to a private (0600) temporary file -- never as
+// spawns only through the path to a private (0600) temporary file, never as
 // a command-line argument or an echoed variable value, so it cannot end up in
 // a shell trace or a build log. A public SHA-256 is still recorded so
 // accidental corruption is reported precisely, but recomputing it cannot make a
@@ -173,8 +173,8 @@ func NewKey() ([]byte, error) {
 }
 
 // WriteKeyFile mints a fresh attestation key and writes it, hex-encoded, to a
-// private (0600) temporary file. It returns the file's path -- the only thing
-// meant to travel as an environment value or command-line argument -- the
+// private (0600) temporary file. It returns the file's path, the only thing
+// meant to travel as an environment value or command-line argument, the
 // key bytes themselves, and a cleanup function the caller must run once the
 // key is no longer needed. The key is never printed, logged or passed
 // directly as an argument or an echoed variable value.

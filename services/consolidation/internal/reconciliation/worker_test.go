@@ -21,7 +21,7 @@ const businessDate = "2026-08-01"
 
 // TestReconcile_DetectsExactCounts is the oracle baseline the ticket's
 // Aceite demands: the result must record the exact count of missing, extra
-// and duplicated entries -- zero is only correct when the sides truly agree,
+// and duplicated entries; zero is only correct when the sides truly agree,
 // never a placeholder.
 func TestReconcile_DetectsExactCounts(t *testing.T) {
 	h := newHarness(t)
@@ -225,7 +225,7 @@ func TestReconcile_ConcurrentCut(t *testing.T) {
 // TestReconcile_ReconnectsAfterInterruptedStream simulates a stream that
 // breaks mid-way (e.g. the Ledger restarting) on its first attempt and
 // succeeds fully on a retry. Reconcile must reconnect and persist a result
-// built from the complete, successful attempt -- never a partial one.
+// built from the complete, successful attempt, never a partial one.
 func TestReconcile_ReconnectsAfterInterruptedStream(t *testing.T) {
 	h := newHarness(t)
 	merchant := testMerchant(0x05)

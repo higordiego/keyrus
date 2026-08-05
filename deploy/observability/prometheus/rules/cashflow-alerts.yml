@@ -2,10 +2,10 @@
 # ("Alertas acionáveis", deployment-security-operations). Every alert below
 # carries, in its annotations: what it measures (summary), the threshold
 # (expr/for), the impact, the safe action, and the objective condition that
-# closes it -- the plan requires all five, not just the threshold.
+# closes it; the plan requires all five, not just the threshold.
 #
 # Every expr below reads a metric that is genuinely scraped today (see
-# ../prometheus.yml) -- nothing here references a metric that does not
+# ../prometheus.yml); nothing here references a metric that does not
 # exist yet. Alert 9 (disk/connections/memory) is the one condition from the
 # plan's list that is NOT implemented: it needs node_exporter/cAdvisor for
 # disk and memory, and a dedicated read-only monitoring role plus
@@ -138,9 +138,9 @@ groups:
           impact: "A critical infrastructure dependency (message broker or identity provider) is unreachable; dependent services will start failing readiness or mutations."
           action: "Check container status (docker compose ps/logs <service>); restart the component; escalate if it does not recover."
           closing_condition: "up == 1 for 2 consecutive minutes."
-          known_gap: "PostgreSQL and the KrakenD gateway are not covered by this alert -- neither has a Prometheus exporter deployed yet (postgres_exporter and KrakenD's own OpenTelemetry metrics export are candidates, tracked separately)."
+          known_gap: "PostgreSQL and the KrakenD gateway are not covered by this alert; neither has a Prometheus exporter deployed yet (postgres_exporter and KrakenD's own OpenTelemetry metrics export are candidates, tracked separately)."
 
-      # NOT IMPLEMENTED -- see the group-level comment above. Left commented
+      # NOT IMPLEMENTED, see the group-level comment above. Left commented
       # out (not a live rule returning permanent "no data") so `promtool
       # check rules` and Alertmanager both treat this file as containing
       # exactly the 8 alerts above, with no silently-broken 9th rule.

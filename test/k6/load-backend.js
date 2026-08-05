@@ -1,15 +1,15 @@
 // Fixup T11 (rnf03-rate-limit-vs-capacity): load.js measures the KrakenD
-// edge's per-IP rate limit (qos/ratelimit/router, client_max_rate: 20 --
-// see deploy/edge/krakend/krakend.json), not the Ledger/Consolidation
+// edge's per-IP rate limit (qos/ratelimit/router, client_max_rate in
+// deploy/edge/krakend/krakend.json), not the Ledger/Consolidation
 // domain's own capacity, because every k6 VU shares the same source IP.
 // This script proves (or disproves) the second, distinct claim RNF-03
-// actually makes -- that the domain itself sustains the 50 RPS peak profile
-// within SLO -- by talking to ledger-api/consolidation-api directly inside
+// actually makes: that the domain itself sustains the 50 RPS peak profile
+// within SLO, by talking to ledger-api/consolidation-api directly inside
 // the Docker network, bypassing the Edge and its rate limit entirely.
 //
 // Token issuance still goes through Keycloak (BACKEND_BASE_URL only
 // bypasses KrakenD for the Ledger/Consolidation calls themselves), so this
-// still measures real authenticated, authorized traffic -- not an
+// still measures real authenticated, authorized traffic, not an
 // unauthenticated backdoor.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
@@ -34,7 +34,7 @@ export const options = {
 };
 
 // Separate base URLs: writes hit the Ledger's own public HTTP listener,
-// reads hit Consolidation's -- both reachable directly on the Docker
+// reads hit Consolidation's, both reachable directly on the Docker
 // network's internal service DNS, never through KrakenD.
 const LEDGER_URL = __ENV.LEDGER_URL || 'http://ledger-api:8081';
 const CONSOLIDATION_URL = __ENV.CONSOLIDATION_URL || 'http://consolidation-api:8082';

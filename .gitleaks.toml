@@ -10,7 +10,7 @@ regex = '''SECURITY_TEST_TOKEN_[A-Z0-9]{32}'''
 keywords = ["SECURITY_TEST_TOKEN_"]
 
 [[allowlists]]
-description = "Generated local tools, evidence and dev-only secrets/certs are outside the versioned source boundary (all three are .gitignore'd -- see .gitignore's secrets/ entry -- so they can never reach git history or a public clone; the `dir` scan mode still walks them on disk, which is what this allowlist is for)"
+description = "Generated local tools, evidence and dev-only secrets/certs are outside the versioned source boundary (all three are .gitignore'd, see .gitignore's secrets/ entry, so they can never reach git history or a public clone; the `dir` scan mode still walks them on disk, which is what this allowlist is for)"
 paths = ['''(^|/)\.tools/''', '''(^|/)evidence/reports/''', '''(^|/)secrets/''']
 
 # Found running the full-history gitleaks scan required before any repo
@@ -22,7 +22,7 @@ paths = ['''(^|/)\.tools/''', '''(^|/)evidence/reports/''', '''(^|/)secrets/''']
 # mistakes for an API key, or a synthetic fixture that exists specifically
 # to prove the log-redaction code redacts secret-shaped strings.
 [[allowlists]]
-description = "Dev-only placeholder secrets, published throughout docker-compose.yaml/README.md/realm-cashflow.json -- never used outside a local Compose stack, not production credentials"
+description = "Dev-only placeholder secrets, published throughout docker-compose.yaml/README.md/realm-cashflow.json, never used outside a local Compose stack, not production credentials"
 regexes = [
   '''0123456789abcdef0123456789abcdef''',      # CASHFLOW_CURSOR_SECRET dev default (docker-compose.yaml)
   '''consolidation-secret-123''',                # CASHFLOW_CONSOLIDATION_CLIENT_SECRET dev default
@@ -30,11 +30,11 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "features/source_digests.json stores SHA-256 content checksums for BDD fixture integrity, not secrets -- gitleaks' generic-api-key rule matches on hex-string entropy alone"
+description = "features/source_digests.json stores SHA-256 content checksums for BDD fixture integrity, not secrets; gitleaks' generic-api-key rule matches on hex-string entropy alone"
 paths = ['''(^|/)features/source_digests\.json$''']
 
 [[allowlists]]
-description = "internal/platform/observability/redact tests and its BDD step fixtures deliberately embed secret-shaped strings (a JWT, an idempotency-key UUID) to prove the redaction code actually redacts them -- the fixture values themselves sign/authenticate nothing"
+description = "internal/platform/observability/redact tests and its BDD step fixtures deliberately embed secret-shaped strings (a JWT, an idempotency-key UUID) to prove the redaction code actually redacts them; the fixture values themselves sign/authenticate nothing"
 regexes = [
   '''0f0e5c1a-2b3c-4d5e-8f90-a1b2c3d4e5f6''',
   '''eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0\.eyJzdWIiOiJtZXJjaGFudC1hIn0\.c2lnbmF0dXJlLXZhbHVl''',

@@ -38,8 +38,8 @@ type Result struct {
 
 // Reprocess drains consolidation.dead_letter_event through the projector,
 // one row at a time, and unconditionally records a
-// consolidation.dlq_reprocess_audit row -- including on a run that
-// reprocesses zero items or fails outright -- naming the actor, the request
+// consolidation.dlq_reprocess_audit row, including on a run that
+// reprocesses zero items or fails outright, naming the actor, the request
 // and completion timestamps, and the row counts. Every successfully
 // reprocessed row is deleted from both dead_letter_event and event_pending
 // so it cannot be picked up twice; a row whose payload still fails is left

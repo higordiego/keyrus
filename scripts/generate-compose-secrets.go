@@ -9,7 +9,7 @@ import (
 )
 
 // localComposeCertValidity is long enough to survive a full working
-// session's `docker compose up` -- testpki.New's default 2-hour window is
+// session's `docker compose up`. testpki.New's default 2-hour window is
 // meant for a single automated test run and silently expired mid-session
 // during local manual testing (found while gathering T11 load evidence:
 // every authenticated request started failing TLS verification once the CA

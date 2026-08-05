@@ -13,7 +13,7 @@ import (
 
 // hexKeyPattern matches anything shaped like the 32-byte hex-encoded
 // attestation key runtimeevidence mints (64 hex characters). It is
-// deliberately generic -- not the exact key value from any one run -- so it
+// deliberately generic, not the exact key value from any one run, so it
 // also catches a differently-generated key that still leaks the same way.
 var hexKeyPattern = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
 
@@ -67,8 +67,8 @@ func TestMakefileNeverEmbedsTheKeyInARecipeLine(t *testing.T) {
 // TestEvidenceKeyScriptsNeverTraceOrPrintTheKey statically guards the second
 // half of the fix: even with the key confined to a private file, a stray
 // `set -x` (or an `sh -x` shebang) in the scripts that mint or read it would
-// make the shell echo every command with its expanded arguments -- including
-// the key -- to stderr. It also fails if a script ever prints the key file's
+// make the shell echo every command with its expanded arguments, including
+// the key, to stderr. It also fails if a script ever prints the key file's
 // contents or path in a way a log could capture.
 func TestEvidenceKeyScriptsNeverTraceOrPrintTheKey(t *testing.T) {
 	t.Parallel()

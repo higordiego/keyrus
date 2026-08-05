@@ -31,7 +31,7 @@ func (m *Metrics) RecordCommit(duration time.Duration) {
 }
 
 // RecordConflict records a request rejected as an idempotency or reversal
-// conflict -- an expected, non-erroneous outcome the operator still wants
+// conflict, an expected, non-erroneous outcome the operator still wants
 // visible (a spike usually means a caller is retrying too eagerly, not that
 // the Ledger is unhealthy).
 func (m *Metrics) RecordConflict() { m.conflicts.Add(1) }

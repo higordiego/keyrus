@@ -7,7 +7,7 @@ rule_files:
 
 scrape_configs:
   # Traces are exported to Jaeger directly; this target only carries
-  # whatever metrics arrive over OTLP (currently none -- every service below
+  # whatever metrics arrive over OTLP (currently none; every service below
   # exposes its own hand-rolled Prometheus text endpoint instead). Kept so a
   # future switch to OTLP metrics needs no scrape_config change.
   - job_name: 'otel-collector'

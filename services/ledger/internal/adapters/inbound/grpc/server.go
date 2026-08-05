@@ -34,8 +34,8 @@ func NewServer(app *application.Service) *Server {
 
 // SetMetrics attaches the domain metrics recorder for mutation RPCs
 // (CreateEntry, CreateReversal). Left unset, CreateEntry and CreateReversal
-// keep working exactly as before -- every call site guards on it being nil
-// -- so existing callers (including tests) are unaffected.
+// keep working exactly as before: every call site guards on it being nil,
+// so existing callers (including tests) are unaffected.
 func (s *Server) SetMetrics(metrics *observability.Metrics) { s.metrics = metrics }
 
 // recordMutation classifies one committed CreateEntry/CreateReversal

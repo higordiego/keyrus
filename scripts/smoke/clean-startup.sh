@@ -1,8 +1,8 @@
 #!/bin/sh
 # Smoke test: `docker compose up --build` on a machine with no prior state
 # (no volumes, no cached migration status) reaches full health with no
-# manual step. Fails closed: any container that isn't healthy/running -- or
-# a migration container that didn't exit 0 -- fails the script.
+# manual step. Fails closed: any container that isn't healthy/running, or
+# a migration container that didn't exit 0, fails the script.
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

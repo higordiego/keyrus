@@ -60,7 +60,7 @@ Para rodar o projeto, você vai precisar de Go 1.26.5, Docker e Docker Compose (
 
 ### Caminho rápido (recomendado)
 
-Um único comando cuida de tudo -- instala as ferramentas, compila, gera os
+Um único comando cuida de tudo: instala as ferramentas, compila, gera os
 certificados/segredos locais (se ainda não existirem) e sobe a stack inteira
 (APIs, bancos, filas, identidade e o stack de observabilidade):
 
@@ -70,12 +70,12 @@ make up
 
 Ao final ele imprime os endereços e credenciais de cada painel (Grafana,
 Keycloak, Jaeger, Prometheus, RabbitMQ). Repetir `make up` depois de um `make
-down` é rápido e seguro -- os passos são incrementais e os certificados só
+down` é rápido e seguro, os passos são incrementais e os certificados só
 são gerados de novo se a pasta `secrets/` não existir.
 
 ```sh
 make down      # para os containers, mantém os dados (volumes)
-make destroy   # apaga containers, volumes e rede -- recomeça do zero
+make destroy   # apaga containers, volumes e rede, recomeça do zero
 ```
 
 ### Passo a passo manual (o que o `make up` faz por baixo dos panos)

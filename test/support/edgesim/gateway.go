@@ -2,8 +2,8 @@
 // configuration against spy backends.
 //
 // It is deliberately not KrakenD. It reads deploy/edge/krakend/krakend.json and
-// applies exactly what that file declares — the route table, the JWT validator,
-// the header allow list and the absence of any retry — so a test can prove that
+// applies exactly what that file declares: the route table, the JWT validator,
+// the header allow list and the absence of any retry, so a test can prove that
 // an unauthenticated request never reaches a backend and that a failed command
 // is invoked once. Whether the shipped KrakenD binary implements those
 // directives faithfully is a separate question, answered by the Compose and

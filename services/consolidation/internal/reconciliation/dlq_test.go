@@ -90,7 +90,7 @@ func TestDLQReprocessor_ReprocessesExactlyOnceAndAudits(t *testing.T) {
 
 // TestDLQReprocessor_LeavesFailingItemForNextAttempt proves a bad payload is
 // never silently dropped: it stays in the DLQ, is counted under Failed, and
-// the audit trail records the partial outcome -- while a healthy sibling in
+// the audit trail records the partial outcome, while a healthy sibling in
 // the same batch still reprocesses successfully.
 func TestDLQReprocessor_LeavesFailingItemForNextAttempt(t *testing.T) {
 	h := newHarness(t)

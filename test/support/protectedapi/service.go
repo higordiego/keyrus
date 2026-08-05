@@ -1,6 +1,6 @@
 // Package protectedapi is a minimal HTTP adapter that exercises the identity
 // boundary of a service: the auth middleware, the scope policy and the tenancy
-// guard. It stores nothing but resource ownership and holds no financial rule —
+// guard. It stores nothing but resource ownership and holds no financial rule;
 // amounts, dates, idempotent deduplication and balances belong to the ledger and
 // consolidation tickets.
 package protectedapi

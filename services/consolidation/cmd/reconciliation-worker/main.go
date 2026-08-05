@@ -234,8 +234,8 @@ func runReconcileCommand(ctx context.Context, watermarkClient *adaptergrpc.Ledge
 
 // runDLQCommand is the protected operational entry point T08 requires: it is
 // never a manual database query. Running it demands a bearer token bound to
-// an identity holding auth.ScopeOpsReconcile -- the same scope the realm
-// already grants only to reconciliation operators -- verified against the
+// an identity holding auth.ScopeOpsReconcile, the same scope the realm
+// already grants only to reconciliation operators, verified against the
 // same OIDC issuer/JWKS every other surface in this system trusts. The
 // verified subject becomes the audit actor, so every DLQ drain is
 // attributable to who ran it, not just to the service account that happens
@@ -303,8 +303,8 @@ func value(name, fallback string) string {
 
 // runDaemon is the unattended loop: it drains the DLQ and reconciles every
 // known merchant/date on a fixed tick. It is deliberately not gated by the
-// operator-token check in runDLQCommand -- that check protects the ad hoc
-// operational command, not the service's own scheduled work -- but every
+// operator-token check in runDLQCommand: that check protects the ad hoc
+// operational command, not the service's own scheduled work, but every
 // drain it performs is still audited under daemonActor.
 func runDaemon(ctx context.Context, pool *pgxpool.Pool, client *adaptergrpc.LedgerWatermarkClient, worker *reconciliation.Worker, reprocessor *reconciliation.DLQReprocessor, logger *slog.Logger) error {
 	logger.Info("starting reconciliation daemon")

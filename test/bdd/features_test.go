@@ -78,9 +78,9 @@ func TestImplementedScenarios(t *testing.T) {
 }
 
 // realRuntimeEvidence owns the whole lifecycle of the proof. If this process
-// already inherited a file path and a key -- meaning `make test`/`make ci`
+// already inherited a file path and a key, meaning `make test`/`make ci`
 // minted that key once and used it for the direct E2E run that precedes this
-// suite -- and the file at that path attests under that same key, it is
+// suite, and the file at that path attests under that same key, it is
 // reused so the gate does not start a second real stack. Any other file left
 // at that path, or a key that does not match, fails the keyed attestation and
 // falls through: this process mints its own key and starts the real container

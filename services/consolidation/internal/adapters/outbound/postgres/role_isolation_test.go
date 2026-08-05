@@ -13,7 +13,7 @@ import (
 
 // TestPostgresRoleIsolationAcrossLedgerAndConsolidationSchemas is the
 // negative test T10 requires: on a single PostgreSQL cluster shared by both
-// services -- exactly the topology docker-compose.yaml uses -- the
+// services, exactly the topology docker-compose.yaml uses, the
 // schema-scoped GRANTs each service's 000004_roles migration creates must
 // be a real, database-enforced barrier, not just an application-level
 // convention a bug or an injected query could bypass.

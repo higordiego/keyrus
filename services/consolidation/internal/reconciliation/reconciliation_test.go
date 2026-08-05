@@ -89,7 +89,7 @@ func newHarness(t *testing.T) *testHarness {
 
 // apply confirms one entry through the real projection path, so daily_balance
 // and inbox_event reflect exactly what a live Consolidation consumer would
-// have produced -- the reconciliation oracle is compared against this real
+// have produced; the reconciliation oracle is compared against this real
 // state, not a hand-rolled fixture.
 func (h *testHarness) apply(merchantID string, position int64, entryType string, amountMinor int64, businessDate string) {
 	h.t.Helper()

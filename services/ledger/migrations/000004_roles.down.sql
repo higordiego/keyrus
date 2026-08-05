@@ -9,8 +9,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ledger REVOKE ALL PRIVILEGES ON TABLES FROM l
 --
 -- ledger_app is a login role, and roles are cluster-wide in PostgreSQL: in
 -- any cluster shared by more than one database that ran this migration
--- (which production never does -- ADR-002 gives each service its own
--- isolated instance -- but a single shared test cluster running this suite
+-- (which production never does; each service is meant to run its own
+-- isolated instance, but a single shared test cluster running this suite
 -- against several disposable databases does), the role can still be granted
 -- on objects in a *different* database that this transaction cannot see or
 -- revoke. DROP ROLE would then fail with "cannot be dropped because some
