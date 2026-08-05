@@ -1,7 +1,5 @@
 # Arquitetura Alvo
 
-Fala pessoal, tudo bem?
-
 Aqui detalhamos como a arquitetura do sistema funciona na prática e resolve as falhas do passado. O objetivo principal é mostrar "o que acontece quando o lojista registra um lançamento" e os motivos das nossas escolhas tecnológicas.
 
 ## Problema Identificado e Decisões
@@ -104,5 +102,4 @@ sequenceDiagram
 
 ## Considerações Finais
 
-Dessa forma, isolamos o problema, entregamos respostas em milissegundos e asseguramos escalabilidade. 
-Qualquer dúvida, só chamar.
+Dessa forma, isolamos o problema, entregamos respostas em milissegundos e asseguramos escalabilidade.
