@@ -156,5 +156,6 @@ Para se aprofundar nas decisões arquiteturais e nas evidências do sistema, con
 | [Rastreabilidade de Testes](docs/testing-traceability.md) | Mapeamento entre cenários de teste, requisitos e evidências. |
 | [Contratos de Integração](docs/contracts.md) | Definição de eventos assíncronos e contratos entre serviços. |
 | [DevSecOps](docs/devsecops.md) | Práticas de segurança, pipelines e verificações automatizadas. |
+| [Estimativas Cloud](docs/custos/estimativas-cloud.md) | Projeção de custos e trade-offs para AWS, GCP e Azure. |
 
 As **Decisões de Arquitetura (ADRs)** estão detalhadas individualmente (ex: [ADR-004 - Keycloak](docs/adrs/ADR-004-keycloak.md) e [ADR-011 - KrakenD Gateway](docs/adrs/ADR-011-krakend-gateway.md)). Para procedimentos operacionais de resolução de falhas, verifique os respectivos manuais, como o [Runbook de DLQ](docs/runbooks/dlq.md) e o [Runbook de Watermark](docs/runbooks/watermark.md).
