@@ -85,6 +85,21 @@ make integration
 make smoke
 ```
 
+## Acessos e Interfaces
+
+Com a infraestrutura rodando, os painéis e ferramentas de controle ficam disponíveis localmente:
+
+| Serviço | Acesso | Usuário Padrão | Senha Padrão |
+| --- | --- | --- | --- |
+| **Grafana** (Dashboards) | [http://localhost:3000](http://localhost:3000) | `admin` | `admin` |
+| **Jaeger** (Traces OTel) | [http://localhost:16686](http://localhost:16686) | - | - |
+| **Prometheus** (Métricas) | [http://localhost:9090](http://localhost:9090) | - | - |
+| **RabbitMQ** (Mensageria) | [http://localhost:15672](http://localhost:15672) | `cashflow` | `secret` |
+| **Keycloak** (Identidade) | [https://localhost:8443](https://localhost:8443) | `admin` | `admin` |
+| **KrakenD** (API Gateway) | `http://localhost:8080` | - | - |
+
+> **Aviso:** O Grafana já possui o dashboard principal provisionado automaticamente. Basta acessar para ver as métricas sendo populadas em tempo real.
+
 ## Autenticação e Integração
 
 Analisando esse ponto de acesso, a segurança é nativa. Você precisa de um token JWT válido para fazer qualquer requisição.
