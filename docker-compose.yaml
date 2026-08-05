@@ -30,6 +30,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
     profiles: ["app"]
 
   rabbitmq:
@@ -51,6 +52,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    # RabbitMQ's own entrypoint occasionally races chown-ing a brand-new,
+    # empty rabbitmq-data volume against the Erlang runtime reading
+    # /var/lib/rabbitmq/.erlang.cookie on first boot, crashing with EACCES
+    # (observed in this session on a from-scratch `docker compose up`).
+    # restart: unless-stopped means Compose brings it back up automatically
+    # instead of the whole stack failing to start over a transient race.
+    restart: unless-stopped
     profiles: ["app"]
 
   keycloak:
@@ -99,6 +107,7 @@ services:
       timeout: 3s
       retries: 30
       start_period: 20s
+    restart: unless-stopped
     profiles: ["app"]
 
   otel-collector:
@@ -108,6 +117,7 @@ services:
       - cashflow-net
     volumes:
       - ./deploy/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    restart: unless-stopped
     profiles: ["app"]
 
   prometheus:
@@ -123,6 +133,7 @@ services:
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
+    restart: unless-stopped
     profiles: ["observability"]
 
   jaeger:
@@ -134,6 +145,7 @@ services:
     ports:
       - "16686:16686"
       - "4317:4317"
+    restart: unless-stopped
     profiles: ["observability"]
 
   grafana:
@@ -153,6 +165,7 @@ services:
     depends_on:
       - prometheus
       - jaeger
+    restart: unless-stopped
     profiles: ["observability"]
 
   # ---------------------------------------------------------
@@ -217,6 +230,7 @@ services:
         condition: service_completed_successfully
       keycloak:
         condition: service_healthy
+    restart: unless-stopped
     profiles: ["app"]
 
   consolidation-api:
@@ -249,6 +263,7 @@ services:
         condition: service_healthy
       ledger-api:
         condition: service_started
+    restart: unless-stopped
     profiles: ["app"]
 
   ledger-outbox-publisher:
@@ -267,6 +282,7 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
+    restart: unless-stopped
     profiles: ["app"]
 
   consolidation-consumer:
@@ -285,6 +301,7 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
+    restart: unless-stopped
     profiles: ["app"]
 
   reconciliation-worker:
@@ -315,6 +332,7 @@ services:
         condition: service_completed_successfully
       ledger-api:
         condition: service_started
+    restart: unless-stopped
     profiles: ["app"]
 
   # ---------------------------------------------------------
@@ -337,6 +355,7 @@ services:
     depends_on:
       - ledger-api
       - consolidation-api
+    restart: unless-stopped
     profiles: ["app"]
 
   # ---------------------------------------------------------

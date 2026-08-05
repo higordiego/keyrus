@@ -2,14 +2,14 @@
 
 Boas-vindas ao sistema de controle de fluxo de caixa para comerciantes. A ideia é construir um motor financeiro assíncrono e resiliente. O objetivo principal é muito claro: registrar débitos e créditos com segurança e garantir que o comerciante veja seu saldo diário. E o mais importante: se a leitura do saldo cair, a gravação de novos lançamentos nunca pode ser afetada.
 
-Toda a arquitetura, decisões técnicas e diagramas estão na pasta [`docs/`](docs/). Abaixo explico como o projeto funciona e como rodar tudo na sua máquina.
+Toda a arquitetura, decisões técnicas e diagramas estão documentados na pasta `docs/`. Abaixo explico como o projeto funciona e como executá-lo.
 
 ## Problema Identificado
 
 Analisando o cenário, identificamos que processar grandes volumes de lançamentos no mesmo banco de dados responsável pelas consultas de saldo estava gerando lentidão e falhas. Nesse caso, a recomendação é separar a responsabilidade em duas partes:
 
-1. **Gravação ([Ledger API](services/ledger)):** Apenas recebe o débito ou crédito e salva imediatamente. Não calcula saldos nem perde tempo.
-2. **Leitura ([Consolidation API](services/consolidation)):** Lê os lançamentos do Ledger de forma assíncrona (via RabbitMQ) e vai atualizando o saldo. Dessa forma, quando o usuário pede para ver o saldo diário, a API apenas devolve o valor pronto em milissegundos.
+1. **Gravação (Ledger API):** Apenas recebe o débito ou crédito e salva imediatamente. Não calcula saldos nem perde tempo.
+2. **Leitura (Consolidation API):** Lê os lançamentos do Ledger de forma assíncrona (via RabbitMQ) e vai atualizando o saldo. Dessa forma, quando o usuário pede para ver o saldo diário, a API apenas devolve o valor pronto em milissegundos.
 
 ## Fluxo de Funcionamento
 
@@ -124,4 +124,22 @@ curl -X GET "http://localhost:8080/v1/daily-balances?date=2026-08-05" \
 * **Portas Ocupadas:** O Docker usa as portas 8080, 5432 e 5672. Feche outros serviços locais se tiver conflitos.
 * **Erro 401 Unauthorized:** O token tem duração curta ou você não enviou os `scopes` obrigatórios. Gere o token novamente garantindo a passagem do parâmetro `scope`.
 * **Erros de SSL/TLS (Certificate Expired):** Os certificados locais têm validade curta. Limpe a pasta `secrets/certs`, rode novamente o `generate-compose-secrets.go` e reinicie os containers.
-* **O Saldo Consolidado não está atualizando:** Verifique se os contêineres `ledger-outbox-publisher` e `consolidation-consumer` não morreram, fazendo as mensagens travarem na fila. Analisando esse ponto, consulte os alertas e acesse a documentação em [`docs/runbooks/`](docs/runbooks/).
+* **O Saldo Consolidado não está atualizando:** Verifique se os contêineres `ledger-outbox-publisher` e `consolidation-consumer` não morreram, fazendo as mensagens travarem na fila. Analisando esse ponto, consulte os alertas e acesse a documentação do [Runbook do Broker](docs/runbooks/broker.md).
+
+## Documentação Técnica
+
+Para se aprofundar nas decisões arquiteturais e nas evidências do sistema, consulte os arquivos abaixo:
+
+| Documento | Descrição |
+| --- | --- |
+| [Matriz de Conformidade](docs/compliance-matrix.md) | Mapeamento dos requisitos do desafio e o estado real de cada item. |
+| [Arquitetura Alvo](docs/arquitetura-alvo.md) | Visão completa da arquitetura do sistema e diagramas de fluxo. |
+| [Arquitetura de Transição](docs/arquitetura-de-transicao.md) | Planejamento da evolução do sistema legado até a arquitetura alvo. |
+| [Defesa Arquitetural](docs/defesa-arquitetural.md) | Justificativas técnicas das escolhas de design e tecnologias adotadas. |
+| [Legado e Incidentes](docs/legado-e-incidentes.md) | Histórico de problemas do sistema antigo que guiaram a nova arquitetura. |
+| [Estratégia de Testes](docs/testing-strategy.md) | Diretrizes e padrões adotados para garantir a qualidade do software. |
+| [Rastreabilidade de Testes](docs/testing-traceability.md) | Mapeamento entre cenários de teste, requisitos e evidências. |
+| [Contratos de Integração](docs/contracts.md) | Definição de eventos assíncronos e contratos entre serviços. |
+| [DevSecOps](docs/devsecops.md) | Práticas de segurança, pipelines e verificações automatizadas. |
+
+As **Decisões de Arquitetura (ADRs)** estão detalhadas individualmente (ex: [ADR-004 - Keycloak](docs/adrs/ADR-004-keycloak.md) e [ADR-011 - KrakenD Gateway](docs/adrs/ADR-011-krakend-gateway.md)). Para procedimentos operacionais de resolução de falhas, verifique os respectivos manuais, como o [Runbook de DLQ](docs/runbooks/dlq.md) e o [Runbook de Watermark](docs/runbooks/watermark.md).
