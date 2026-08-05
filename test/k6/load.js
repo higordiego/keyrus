@@ -1,25 +1,45 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
+// Teste de carga via Edge (KrakenD): simula 100 usuarios concorrentes, cada
+// um executando a jornada completa por TODAS as rotas publicas da API --
+// nao so escrita e leitura isoladas. Por rodar atras do KrakenD, este teste
+// tambem esta sujeito ao rate limit por IP do gateway (client_max_rate em
+// deploy/edge/krakend/krakend.json); como todos os VUs do k6 saem do mesmo
+// container/IP, ele mede "o gateway aguenta 100 usuarios reais" e nao a
+// capacidade do dominio isolado -- para isso, ver load-backend.js e o
+// RNF-03 em docs/testing-traceability.md.
 function generateUUID() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        let r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
         return v.toString(16);
     });
 }
 
 export const options = {
-    // Rampa de carga para simular o "perfil de pico"
-    stages: [
-        { duration: '10s', target: 500 },  // Rampa de subida rápida
-        { duration: '30s', target: 500 },  // Sustentação
-        { duration: '10s', target: 0 },   // Rampa de descida
-    ],
+    scenarios: {
+        full_journey: {
+            executor: 'ramping-vus',
+            startVUs: 0,
+            stages: [
+                { duration: '15s', target: 100 }, // rampa de subida ate 100 usuarios
+                { duration: '40s', target: 100 }, // sustentacao com 100 usuarios concorrentes
+                { duration: '10s', target: 0 },   // rampa de descida
+            ],
+            exec: 'userJourney',
+        },
+    },
     thresholds: {
-        // 95% das requisições devem ser respondidas em menos de 15000ms (ajustado para suportar o enfileiramento extremo do Docker local com 500VUs)
-        http_req_duration: ['p(95)<15000'], 
-        // A taxa de erro local sobe devido ao esgotamento de CPU/Sockets do Docker, então relaxamos para o CI não quebrar
-        http_req_failed: ['rate<0.50'],   
+        // 95% das requisicoes devem responder em menos de 15s (ajustado para o
+        // enfileiramento do Docker Desktop local, nao um SLO de producao).
+        http_req_duration: ['p(95)<15000'],
+        http_req_failed: ['rate<0.05'],
+        'checks{step:create}': ['rate>0.95'],
+        'checks{step:get}': ['rate>0.95'],
+        'checks{step:list}': ['rate>0.95'],
+        'checks{step:reverse}': ['rate>0.95'],
+        'checks{step:balances}': ['rate>0.95'],
     },
 };
 
@@ -29,112 +49,86 @@ const CLIENT_ID = __ENV.CLIENT_ID || 'cashflow-merchant-app';
 const USERNAME = __ENV.USERNAME || 'merchant-a';
 const PASSWORD = __ENV.PASSWORD || 'merchant-a-pass';
 
-export function setup() {
-    // Autenticação inicial (Setup é executado apenas 1x antes da carga)
-    const res = http.post(KEYCLOAK_URL, {
-        grant_type: 'password',
-        client_id: CLIENT_ID,
-        username: USERNAME,
-        password: PASSWORD,
-        scope: 'ledger:write ledger:read consolidation:read',
-    }, {
-        headers: {
-            'Host': 'edge.cashflow.local',
-            'X-Forwarded-Proto': 'https',
-        }
-    });
-    
-    let token = '';
-    if (res.status === 200) {
-        token = res.json('access_token');
-        
-        // Seed inicial para garantir que a data exista antes da carga
-        const idempotencyKey = generateUUID();
-        const entryPayload = JSON.stringify({
-            type: 'ENTRY_TYPE_CREDIT',
-            amount: '1000',
-            currency: 'BRL',
-            businessDate: new Date().toISOString().split('T')[0],
-            description: 'Seed entry'
-        });
-        
-        http.post(`${BASE_URL}/v1/entries`, entryPayload, {
-            headers: {
+function authHeaders(token, extra) {
+    return {
+        headers: Object.assign(
+            {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`,
-                'Idempotency-Key': idempotencyKey,
-                'Host': 'edge.cashflow.local',
+                Authorization: `Bearer ${token}`,
+                Host: 'edge.cashflow.local',
                 'X-Forwarded-Proto': 'https',
-            }
-        });
-        // Aguarda um pouco para o consumidor processar
-        sleep(1);
-    } else {
-        console.warn(`Falha na autenticação. Status: ${res.status}. Body: ${res.body}`);
-    }
-    
-    return { token };
+            },
+            extra || {}
+        ),
+    };
 }
 
-export default function (data) {
-    const idempotencyKey = generateUUID();
-    const entryPayload = JSON.stringify({
+export function setup() {
+    // Autenticacao acontece uma vez, fora da carga medida.
+    const res = http.post(
+        KEYCLOAK_URL,
+        {
+            grant_type: 'password',
+            client_id: CLIENT_ID,
+            username: USERNAME,
+            password: PASSWORD,
+            scope: 'ledger:write ledger:read consolidation:read',
+        },
+        { headers: { Host: 'edge.cashflow.local', 'X-Forwarded-Proto': 'https' } }
+    );
+
+    if (res.status !== 200) {
+        throw new Error(`Falha na autenticacao antes da carga. Status: ${res.status}. Body: ${res.body}`);
+    }
+
+    return { token: res.json('access_token') };
+}
+
+// userJourney exercita as 5 rotas publicas do sistema em sequencia, na
+// ordem que um comerciante real usaria: cria um lancamento, confere que
+// foi gravado, lista seus lancamentos, confere o saldo diario consolidado
+// e por fim estorna o que criou -- fechando o ciclo sem inflar o saldo a
+// cada iteracao/VU.
+export function userJourney(data) {
+    const today = new Date().toISOString().split('T')[0];
+
+    const createPayload = JSON.stringify({
         type: 'ENTRY_TYPE_CREDIT',
         amount: '1000',
         currency: 'BRL',
-        businessDate: new Date().toISOString().split('T')[0],
-        description: 'Load test entry'
+        businessDate: today,
+        description: 'Load test entry',
     });
-
-    const writeParams = {
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${data.token}`,
-            'Idempotency-Key': idempotencyKey,
-            'Host': 'edge.cashflow.local',
-            'X-Forwarded-Proto': 'https',
-        },
-    };
-
-    // 1. Escrita (Ledger API)
-    let writeRes = http.post(`${BASE_URL}/v1/entries`, entryPayload, writeParams);
-    if (writeRes.status !== 200 && __ITER === 0) {
-        console.error(`Write failed! Status: ${writeRes.status}, Body: ${writeRes.body}`);
+    const createRes = http.post(
+        `${BASE_URL}/v1/entries`,
+        createPayload,
+        authHeaders(data.token, { 'Idempotency-Key': generateUUID() })
+    );
+    const created = check(createRes, { 'create entry: status is 200': (r) => r.status === 200 }, { step: 'create' });
+    if (!created) {
+        sleep(1);
+        return;
     }
-    
-    check(writeRes, {
-        'write status is 200': (r) => r.status === 200,
-    });
+    const entryId = createRes.json('entry.entryId') || createRes.json('entryId');
 
-    // 2. Leitura (Consolidation API)
-    const readParams = {
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${data.token}`,
-            'Host': 'edge.cashflow.local',
-            'X-Forwarded-Proto': 'https',
-        },
-    };
+    const getRes = http.get(`${BASE_URL}/v1/entries/${entryId}`, authHeaders(data.token));
+    check(getRes, { 'get entry: status is 200': (r) => r.status === 200 }, { step: 'get' });
 
-    const today = new Date().toISOString().split('T')[0];
-    let readRes = http.get(`${BASE_URL}/v1/daily-balances?date=${today}`, readParams);
-    if (readRes.status !== 200 && __ITER === 0) {
-        console.error(`Read failed! Status: ${readRes.status}, Body: ${readRes.body}`);
-    }
-    
-    check(readRes, {
-        'read status is 200': (r) => r.status === 200,
-    });
+    const listRes = http.get(`${BASE_URL}/v1/entries?page_size=20`, authHeaders(data.token));
+    check(listRes, { 'list entries: status is 200': (r) => r.status === 200 }, { step: 'list' });
 
-    // 3. Listagem (Ledger API)
-    let listRes = http.get(`${BASE_URL}/v1/entries?limit=10`, readParams);
-    if (listRes.status !== 200 && __ITER === 0) {
-        console.error(`List failed! Status: ${listRes.status}, Body: ${listRes.body}`);
-    }
-    
-    check(listRes, {
-        'list status is 200': (r) => r.status === 200,
-    });
+    const balancesRes = http.get(
+        `${BASE_URL}/v1/daily-balances?start_date=${today}&end_date=${today}`,
+        authHeaders(data.token)
+    );
+    check(balancesRes, { 'daily balances: status is 200': (r) => r.status === 200 }, { step: 'balances' });
+
+    const reverseRes = http.post(
+        `${BASE_URL}/v1/entries/${entryId}/reversals`,
+        null,
+        authHeaders(data.token, { 'Idempotency-Key': generateUUID() })
+    );
+    check(reverseRes, { 'reverse entry: status is 200': (r) => r.status === 200 }, { step: 'reverse' });
 
     sleep(1);
 }
