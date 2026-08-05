@@ -128,7 +128,7 @@ curl -X POST http://localhost:8080/v1/entries \
 
 Para consultar o saldo consolidado (leitura):
 ```sh
-curl -X GET "http://localhost:8080/v1/daily-balances?date=2026-08-05" \
+curl -X GET "http://localhost:8080/v1/daily-balances?start_date=2026-08-05&end_date=2026-08-05" \
   -H "Host: edge.cashflow.local" \
   -H "X-Forwarded-Proto: https" \
   -H "Authorization: Bearer $TOKEN"
