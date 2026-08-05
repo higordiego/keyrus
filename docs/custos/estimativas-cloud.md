@@ -74,6 +74,4 @@ Analisando as opções frente à arquitetura do sistema, identificamos os seguin
 | **GCP** | O GKE é o melhor e mais barato orquestrador Kubernetes do mercado. O Cloud SQL possui ótimo custo-benefício. | Não possui serviço gerenciado nativo de RabbitMQ, obrigando a gestão própria no Kubernetes ou a contratação de um SaaS (CloudAMQP). |
 | **Azure** | Ideal caso o cliente já utilize o ecossistema Microsoft (Integração com Entra ID). | A curva de aprendizado para a gestão do AKS e das redes (VNets) é um pouco mais complexa. |
 
-**A recomendação final:**
 
-Foi definido o uso da **AWS** como o alvo primário para esta arquitetura. Como o sistema depende criticamente da estabilidade e persistência do RabbitMQ (para a sincronização entre Ledger e Consolidado), ter o broker como serviço gerenciado nativo (Amazon MQ) elimina uma carga operacional imensa da equipe. Com isso, conseguimos governança unificada (IAM, VPC, CloudWatch) e alta disponibilidade out-of-the-box para todas as peças chaves da infraestrutura.

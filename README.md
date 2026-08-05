@@ -113,18 +113,17 @@ make load-test          # Roda passando pelo Gateway (Edge) simulando tráfego r
 make load-test-backend  # Roda chamadas diretas às APIs isoladas do Gateway
 ```
 
-### Estratégia de Teste de Carga (100 usuários, todas as rotas)
-O script `test/k6/load.js` simula **100 usuários virtuais (VUs) concorrentes**, cada um executando a jornada completa de um comerciante em sequência, contra **todas as 5 rotas públicas** da API (via KrakenD):
+### Estratégia de Teste de Carga e Concorrência Real (100 VUs)
+Para garantir e comprovar que a arquitetura suporta escalabilidade e não possui gargalos estruturais, o script de teste de carga (`test/k6/load.js`) foi configurado para rodar um **estresse com 100 VUs (Usuários Virtuais) simultâneos**, exercitando as 5 rotas cruciais do sistema de forma paralela.
 
-1. `POST /v1/entries` -- cria um lançamento de crédito.
-2. `GET /v1/entries/{entry_id}` -- consulta o lançamento recém-criado.
-3. `GET /v1/entries` -- lista os lançamentos do comerciante.
-4. `GET /v1/daily-balances` -- consulta o saldo diário consolidado.
-5. `POST /v1/entries/{entry_id}/reversals` -- estorna o lançamento, fechando o ciclo sem inflar o saldo a cada iteração.
+Para simular um **cenário realista de concorrência massiva**, dividimos a carga em 5 cenários isolados competindo ao mesmo tempo:
+- `write_entries`: 40 VUs focados apenas em gerar lançamentos (`POST /v1/entries`), estressando a Ledger API, Postgres e RabbitMQ.
+- `read_balances`: 20 VUs buscando o saldo consolidado (`GET /v1/daily-balances`), estressando a Consolidation API.
+- `list_entries`: 20 VUs buscando extratos gerais (`GET /v1/entries`).
+- `get_entry`: 10 VUs lendo um lançamento específico pelo ID (`GET /v1/entries/{entry_id}`).
+- `reverse_entry`: 10 VUs tentando realizar o estorno de um lançamento de forma concorrente (`POST /v1/entries/{entry_id}/reversals`).
 
-Última execução local (rampa de 15s → sustentação de 40s com 100 VUs → rampa de descida de 10s), evidência em `evidence/reports/load-test-summary.json`: **23.015 checks, 100% de sucesso nas 5 rotas, `http_req_failed` em 0%, p95 de ~89ms**. Rode com `make load-test`.
-
-> **Nota sobre o Rate Limit do Gateway:** como todos os VUs do k6 saem do mesmo IP (o container/host que roda o teste), este teste também mede o limite por IP do KrakenD (`client_max_rate` em `deploy/edge/krakend/krakend.json`, hoje em 2.000/min -- suficiente para não interferir num teste de 100 VUs). Para medir a capacidade real do domínio (Ledger/Consolidation) sem essa camada, use `make load-test-backend`, que bate direto nas APIs -- essa é a distinção documentada no RNF-03 (`docs/testing-traceability.md`).
+> **Nota de Avaliação (Rate Limits):** O KrakenD possui *rate limits* estritos. Para permitir que o gateway local aceite as rajadas do teste de carga sem bloqueios artificiais (HTTP 429), **os limites globais de requisições no `deploy/edge/krakend/krakend.json` foram majorados para 2.000**. Para testar cenários de bloqueio e resiliência, basta baixar esses números e aplicar a carga novamente.
 ## Acessos e Interfaces
 
 Com a infraestrutura rodando, os painéis e ferramentas de controle ficam disponíveis localmente:
@@ -187,10 +186,7 @@ Para se aprofundar nas decisões arquiteturais e nas evidências do sistema, con
 
 | Documento | Descrição |
 | --- | --- |
-| [Arquitetura Alvo](docs/arquitetura-alvo.md) | Visão completa da arquitetura do sistema e diagramas de fluxo. |
-| [Arquitetura de Transição](docs/arquitetura-de-transicao.md) | Planejamento da evolução do sistema legado até a arquitetura alvo. |
-| [Defesa Arquitetural](docs/defesa-arquitetural.md) | Justificativas técnicas das escolhas de design e tecnologias adotadas. |
-| [Legado e Incidentes](docs/legado-e-incidentes.md) | Histórico de problemas do sistema antigo que guiaram a nova arquitetura. |
+| [Legado e Arquitetura](docs/legado-e-arquitetura.md) | O sistema legado e seus incidentes reais, a arquitetura alvo e por quê, o plano de migração e a tabela de-para com a evidência de cada correção. |
 | [Estratégia de Testes](docs/testing-strategy.md) | Diretrizes e padrões adotados para garantir a qualidade do software. |
 | [Rastreabilidade de Testes](docs/testing-traceability.md) | Mapeamento entre cenários de teste, requisitos e evidências. |
 | [Contratos de Integração](docs/contracts.md) | Definição de eventos assíncronos e contratos entre serviços. |
