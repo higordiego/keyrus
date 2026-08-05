@@ -29,18 +29,18 @@ flowchart TB
         KrakenD -.OIDC.-> Keycloak
     end
 
-    subgraph Gravação (Ledger)
+    subgraph Gravacao [Gravação Ledger]
         LedgerAPI[Ledger API]
         Publisher[Outbox Publisher]
         LedgerAPI -->|Mesma Transação| LedgerDB[(Postgres Ledger)]
         Publisher -->|Lê Outbox| LedgerDB
     end
 
-    subgraph Fila
+    subgraph Fila [Fila de Mensageria]
         MQ[(RabbitMQ)]
     end
 
-    subgraph Leitura (Consolidado)
+    subgraph Leitura [Consolidado Leitura]
         Consumer[Consolidation Consumer]
         ConsolidationAPI[Consolidation API]
         Reconciler[Reconciliation Worker]

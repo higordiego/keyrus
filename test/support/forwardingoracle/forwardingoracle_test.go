@@ -30,8 +30,7 @@ func TestForwardedCallWithDefenseInDepthIsRejected(t *testing.T) {
 
 func TestDecreasedCounterIsAlsoRejected(t *testing.T) {
 	t.Parallel()
-	// A counter cannot legitimately decrease; treating any change as a forward
-	// keeps the oracle from being fooled by a reset or a different measurement.
+
 	if err := AssertNotForwarded(10, 9); err == nil {
 		t.Fatal("a decreased entrypoint counter was accepted")
 	}

@@ -234,8 +234,6 @@ func TestLedgerEntryReadProjectionExposesStateAndReversalReferences(t *testing.T
 		t.Fatalf("EntryState OpenAPI enum: got %v, want %v", enumValues, wantValues)
 	}
 
-	// This verifies the read contract only. Runtime tickets must derive this view
-	// from the compensating entry without updating the stored original record.
 	original := &ledgerv1.LedgerEntry{EntryId: "original", State: ledgerv1.EntryState_ENTRY_STATE_REVERSED, ReversalEntryId: "compensation"}
 	compensation := &ledgerv1.LedgerEntry{EntryId: "compensation", State: ledgerv1.EntryState_ENTRY_STATE_CONFIRMED, OriginalEntryId: "original"}
 	for _, message := range []*ledgerv1.LedgerEntry{original, compensation} {

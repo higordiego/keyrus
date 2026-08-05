@@ -65,8 +65,6 @@ func TestGuardRefusesAnIdentityWithoutAMerchant(t *testing.T) {
 	t.Parallel()
 	guard := newGuard(t, directory{"entry-owned-by-a": merchantA})
 
-	// A service identity has no merchant. It must not inherit tenant access by
-	// matching an empty owner.
 	err := guard.Authorize(context.Background(), auth.Identity{}, "entry-owned-by-a")
 	if !errors.Is(err, tenancy.ErrResourceUnavailable) {
 		t.Fatalf("got %v, want %v", err, tenancy.ErrResourceUnavailable)

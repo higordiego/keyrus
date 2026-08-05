@@ -53,9 +53,7 @@ func TestMetricsRecordRunCountsErrorsWithoutOverwritingLastGoodRun(t *testing.T)
 	if !containsMetricValue(output, "reconciliation_errors_total", "1") {
 		t.Errorf("errors_total: output:\n%s", output)
 	}
-	// The failed run must not clobber the last successful run's gauges --
-	// an operator diagnosing a stuck watermark needs the last real result,
-	// not a zeroed-out one from the failed attempt.
+
 	if !containsMetricValue(output, "reconciliation_last_run_missing_entries", "7") {
 		t.Errorf("last_run_missing_entries should still reflect the last successful run: output:\n%s", output)
 	}

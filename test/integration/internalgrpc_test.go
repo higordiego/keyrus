@@ -273,8 +273,7 @@ func TestInternalCallPropagatesTraceContextAndBoundsTheDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint span context: %v", err)
 	}
-	// A client call made inside a server handler carries the caller's trace
-	// identity on the incoming metadata; the client interceptor forwards it.
+
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
 		tracecontext.TraceParentHeader, span.String(),
 		tracecontext.TraceStateHeader, tracecontext.PublicTraceState,
@@ -368,8 +367,6 @@ func TestServerRefusesACallerWithoutADeadline(t *testing.T) {
 	t.Parallel()
 	fixture := startPrivateSurface(t, defaultOptions())
 
-	// Connect without the client interceptors so no deadline is imposed for the
-	// caller, then attach the credential by hand.
 	connection, err := fixture.harness.Connection(fixture.harness.PKI.ClientTLS(), nil, 0)
 	if err != nil {
 		t.Fatalf("open connection: %v", err)

@@ -53,8 +53,7 @@ func TestForgedOraclesWithRecomputedPublicChecksumAreRejected(t *testing.T) {
 	if _, err := Load(forged, key); err == nil || !strings.Contains(err.Error(), "attestation") {
 		t.Fatalf("forged evidence with a recomputed public checksum was accepted: %v", err)
 	}
-	// A forger who also invents a key cannot pass either: the verifier only
-	// accepts the key it minted for the run it started.
+
 	if _, err := Load(forged, testKey(t)); err == nil {
 		t.Fatal("forged evidence was accepted under an attacker-chosen key")
 	}

@@ -11,9 +11,7 @@ const samples = 32
 
 func TestStableTwoFoldSeparationIsRejected(t *testing.T) {
 	t.Parallel()
-	// The exact counterexample from the review: both classes are perfectly
-	// stable, so every noise-derived tolerance collapses to zero, yet a single
-	// observation separates them.
+
 	verdict, err := Evaluate(constant(100*time.Millisecond, samples), constant(200*time.Millisecond, samples))
 	if err == nil {
 		t.Fatalf("deterministic 100ms/200ms populations were accepted: %s", verdict)
@@ -28,7 +26,7 @@ func TestStableTwoFoldSeparationIsRejected(t *testing.T) {
 
 func TestTwoFoldSeparationWithInflatedVarianceIsRejected(t *testing.T) {
 	t.Parallel()
-	// Inflating the spread used to widen the tolerance past the real gap.
+
 	random := rand.New(rand.NewSource(7))
 	foreign := jittered(random, 100*time.Millisecond, 40*time.Millisecond, samples)
 	absent := jittered(random, 200*time.Millisecond, 40*time.Millisecond, samples)
@@ -39,8 +37,7 @@ func TestTwoFoldSeparationWithInflatedVarianceIsRejected(t *testing.T) {
 
 func TestSmallButPerfectlyConsistentOffsetIsRejected(t *testing.T) {
 	t.Parallel()
-	// The median gap sits well inside the tolerance, so only the rank criterion
-	// can catch this channel.
+
 	foreign := constant(10*time.Millisecond, samples)
 	absent := constant(10*time.Millisecond+200*time.Microsecond, samples)
 	verdict, err := Evaluate(foreign, absent)

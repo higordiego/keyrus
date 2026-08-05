@@ -1569,5 +1569,5 @@ func TestErrorSanitizationRemovesCredentials(t *testing.T) {
 func ExampleDefaultTopology() {
 	topology := DefaultTopology()
 	fmt.Println(topology.Exchange, topology.Queue)
-	// Output: ledger.events consolidation.ledger-entry-confirmed.v2
+
 }

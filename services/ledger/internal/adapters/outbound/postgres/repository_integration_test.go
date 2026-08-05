@@ -48,8 +48,7 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	// The fixture terminates its container explicitly. Disabling Ryuk avoids a
-	// second image dependency and keeps the integration test usable offline.
+
 	_ = os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
 	ctx, cancel := context.WithTimeout(context.Background(), postgresStartupBudget)
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -490,8 +489,7 @@ func TestIdempotentRetryPrecedesTemporalValidationAfterD30BecomesD31(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a response lost after commit, then retry after the merchant's day
-	// advances and after a valid time-zone configuration change.
+
 	clock.Set(time.Date(2026, 8, 1, 15, 0, 0, 0, time.UTC))
 	input.TimeZone = "Europe/Lisbon"
 	replayed, err := service.CreateEntry(ctx, input)

@@ -51,7 +51,7 @@ func (s *Server) recordMutation(err error, started time.Time) {
 	case errors.Is(err, application.ErrIdempotencyConflict), errors.Is(err, application.ErrAlreadyReversed):
 		s.metrics.RecordConflict()
 	case errors.Is(err, application.ErrInvalidArgument), errors.Is(err, application.ErrEntryNotFound):
-		// Caller error, not a Ledger health signal -- deliberately not counted.
+
 	default:
 		s.metrics.RecordFailure()
 	}

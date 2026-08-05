@@ -65,8 +65,7 @@ func (runtime Runtime) Run(ctx context.Context) error {
 	serverError := runtime.Server.Shutdown(shutdownContext)
 	var brokerErrors []error
 	for _, broker := range runtime.Brokers {
-		// Close starts by interrupting the active socket, so even a syscall that
-		// did not observe context cannot prevent the subsequent bounded join.
+
 		brokerErrors = append(brokerErrors, broker.Close())
 	}
 	workerError := waitRuntimeWorkers(shutdownContext, workers)

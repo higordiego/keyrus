@@ -147,7 +147,7 @@ func run(logger *slog.Logger) error {
 		if !ready.Load() {
 			return errors.New("not ready")
 		}
-		return nil // DB is checked continuously by worker
+		return nil
 	}, metrics)
 	managementServer := &http.Server{
 		Handler:           appendDomainMetrics(managementHandler, domainMetrics),
