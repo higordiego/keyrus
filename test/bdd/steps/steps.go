@@ -65,7 +65,7 @@ type scenarioState struct {
 // the consolidation fixture's own literal/parameterized matching.
 func Initialize(evidence runtimeevidence.Evidence) func(*godog.ScenarioContext) {
 	return func(ctx *godog.ScenarioContext) {
-		// T02 Init
+
 		w := newWorld(evidence)
 		ctx.Before(func(c context.Context, current *godog.Scenario) (context.Context, error) {
 			return c, w.prepare(current)
@@ -78,14 +78,12 @@ func Initialize(evidence runtimeevidence.Evidence) func(*godog.ScenarioContext) 
 		registerPublicEdge(ctx, w)
 		registerPrivateSurface(ctx, w)
 
-		// HEAD Init
 		state := &scenarioState{}
 		publisher := &publisherScenario{}
 		ctx.Before(state.beforeScenario)
 		ctx.Before(publisher.before)
 		ctx.After(state.afterScenario)
 
-		// Explicit legacy step registrations to avoid catch-all ambiguity
 		legacySteps := []string{
 			"que existe um lançamento confirmado e ainda não aplicado",
 			"2026-07-30",
@@ -332,8 +330,7 @@ func (state *scenarioState) execute(text string) error {
 		state.merchant = merchantMain
 		return nil
 	case "que a posição 1 é um crédito de R$ 100,00 em \"2026-07-30\"", "que a posição 2 é um débito de R$ 30,00 em \"2026-07-30\"", "que a posição 3 é um crédito de R$ 10,00 em \"2026-07-31\"":
-		// The official event fixtures are pre-built in standardEvents; parsing and
-		// financial validation occur when ApplyPayload is called.
+
 		if len(state.events) != 5 {
 			return fmt.Errorf("standard event fixture is incomplete")
 		}

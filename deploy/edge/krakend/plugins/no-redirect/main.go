@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-
 // Package main exposes the KrakenD HTTP-client plugin used by the browser
 // login action. Keycloak must return its redirect to the browser; following it
 // inside the gateway would send an application callback to the backend client.

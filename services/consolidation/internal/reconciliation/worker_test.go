@@ -27,19 +27,10 @@ func TestReconcile_DetectsExactCounts(t *testing.T) {
 	h := newHarness(t)
 	merchant := testMerchant(0x01)
 
-	// Consolidated side: positions 1 (credit 1000), 2 (debit 200), 3 (credit 500).
 	h.apply(merchant, 1, "credit", 1_000, businessDate)
 	h.apply(merchant, 2, "debit", 200, businessDate)
 	h.apply(merchant, 3, "credit", 500, businessDate)
 
-	// Duplicate: a second inbox_event row reusing position 3's entry_id but a
-	// different position/event_id -- a data-integrity bug the oracle must
-	// catch. The Store layer prevents this through its normal Apply path
-	// (UNIQUE(merchant_id, position) and conflict detection on entry_id
-	// reuse), so it is seeded directly to exercise the oracle in isolation.
-	// Position 4 is otherwise unused by this test's fixture, and stays
-	// within the cut (4) applied below, so it lands in the same
-	// loadProjectedEntryCounts window as positions 1-3.
 	duplicateEventID := testUUID(merchant, "0", 99)
 	_, err := h.pool.Exec(context.Background(), `
 		INSERT INTO consolidation.inbox_event (
@@ -52,9 +43,6 @@ func TestReconcile_DetectsExactCounts(t *testing.T) {
 		t.Fatalf("seed duplicate inbox_event row: %v", err)
 	}
 
-	// Ledger (source) side: positions 1, 2 match; position 4 exists on the
-	// source but was never applied to the projection ("missing"); position 3
-	// exists on the projection but not on the source ("extra", by omission).
 	source := newScriptedSource(streamPlan{
 		failAt: -1,
 		entries: []ledgerrpc.Entry{
@@ -79,8 +67,7 @@ func TestReconcile_DetectsExactCounts(t *testing.T) {
 	if result.DuplicatedEntries != 1 {
 		t.Errorf("duplicated entries = %d, want 1 (seeded duplicate of position 3's entry_id)", result.DuplicatedEntries)
 	}
-	// Source net: 1000 - 200 + 300 = 1100. Projected net (daily_balance):
-	// 1000 - 200 + 500 = 1300. |1300 - 1100| = 200.
+
 	if result.FinancialDifferenceMinor != 200 {
 		t.Errorf("financial difference = %d, want 200", result.FinancialDifferenceMinor)
 	}
@@ -126,8 +113,7 @@ func TestReconcile_RepeatSameCut_NoEffect(t *testing.T) {
 		t.Error("repeating the same cut must be reported as skipped, not re-run")
 	}
 	if second != first {
-		// Skipped is expected to differ (false vs true); compare the
-		// reported counts explicitly instead of the whole struct.
+
 		if second.MissingEntries != first.MissingEntries || second.ExtraEntries != first.ExtraEntries ||
 			second.DuplicatedEntries != first.DuplicatedEntries || second.FinancialDifferenceMinor != first.FinancialDifferenceMinor {
 			t.Errorf("repeated cut produced different counts: first=%+v second=%+v", first, second)

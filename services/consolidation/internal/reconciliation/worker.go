@@ -231,9 +231,9 @@ func attemptStream(ctx context.Context, source LedgerSource, merchantID string, 
 		}
 		entries[entry.EntryID] = entry
 		switch entry.Type {
-		case 1: // CREDIT
+		case 1:
 			credits += entry.AmountMinor
-		case 2: // DEBIT
+		case 2:
 			debits += entry.AmountMinor
 		}
 	}

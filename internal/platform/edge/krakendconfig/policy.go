@@ -294,7 +294,7 @@ func validateRetry(endpoint Endpoint, policy Policy) []Violation {
 	var violations []Violation
 	for _, key := range collectKeys(document) {
 		lowered := strings.ToLower(key)
-		// "retr" covers retry, retries and max_retries alike.
+
 		if strings.Contains(lowered, "retr") || strings.Contains(lowered, "backoff") {
 			violations = append(violations, Violation{RuleNoCommandRetry, route, "command route declares " + key})
 		}

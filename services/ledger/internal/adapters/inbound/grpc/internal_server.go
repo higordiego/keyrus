@@ -31,13 +31,7 @@ const (
 func (s *InternalServer) GetMerchantWatermark(ctx context.Context, merchantID string) (uint64, time.Time, error) {
 	var pos uint64
 	var observedAt time.Time
-	// last_position, not position: ledger.merchant_position's column is
-	// named last_position (see 000001_ledger_core.up.sql). This previously
-	// queried a column that does not exist, so GetMerchantWatermark failed
-	// for every merchant with a real position -- unnoticed because every
-	// automated test exercises this RPC through a fake ledgerrpc.Handler,
-	// never the real Postgres-backed one. Found while gathering T11
-	// backend-capacity load evidence.
+
 	err := s.pool.QueryRow(ctx, `SELECT last_position, updated_at FROM ledger.merchant_position WHERE merchant_id = $1`, merchantID).Scan(&pos, &observedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -49,11 +43,7 @@ func (s *InternalServer) GetMerchantWatermark(ctx context.Context, merchantID st
 }
 
 func (s *InternalServer) StreamEntriesAtCut(ctx context.Context, merchantID string, cut uint64, yield func(ledgerrpc.Entry) error) error {
-	// ledger.ledger_entry (not ledger.entry, which does not exist), and its
-	// primary key column is `id`, not `entry_id`; `entry_type` is stored as
-	// text ('credit'/'debit'), not the proto's int32 enum -- same
-	// never-exercised-against-real-Postgres bug class as
-	// GetMerchantWatermark above.
+
 	rows, err := s.pool.Query(ctx, `
 		SELECT
 			id::text,

@@ -98,10 +98,7 @@ func TestDLQReprocessor_LeavesFailingItemForNextAttempt(t *testing.T) {
 	goodEventID := testUUID(merchant, "0", 1)
 	badEventID := testUUID(merchant, "0", 2)
 	seedDLQRow(t, h, goodEventID, merchant, businessDate, confirmedPayload(merchant, 1, "credit", 1_000, businessDate))
-	// Valid JSON, but missing the required original_entry_id key, so it
-	// clears the dead_letter_event JSONB column check and only fails once
-	// the projector applies domain validation -- exercising the Failed path
-	// rather than the earlier "malformed JSON" rejection.
+
 	seedDLQRow(t, h, badEventID, merchant, businessDate, []byte(`{
 		"event_id": "`+badEventID+`", "event_type": "ledger.entry.confirmed.v1",
 		"occurred_at": "2026-08-01T12:00:00Z", "merchant_id": "`+merchant+`",

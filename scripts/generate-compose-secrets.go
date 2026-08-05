@@ -32,10 +32,6 @@ func main() {
 		panic(err)
 	}
 
-	// Client secrets docker-compose.yaml expects to find mounted at
-	// /run/secrets/*, matching the CASHFLOW_CONSOLIDATION_CLIENT_SECRET /
-	// CASHFLOW_RECONCILIATION_CLIENT_SECRET defaults baked into
-	// deploy/identity/keycloak/realm-cashflow.json's client definitions.
 	err = os.WriteFile("secrets/consolidation-client-secret", []byte("consolidation-secret-123"), 0644)
 	if err != nil {
 		panic(err)

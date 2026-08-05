@@ -155,8 +155,6 @@ func waitRabbit(ctx context.Context, rabbitURL string) error {
 	}
 }
 
-// --- event fixtures -------------------------------------------------------
-
 func testEvent(merchant string, position int64, entryType string, amountMinor int64, businessDate, originalEntryID string) domain.EntryConfirmed {
 	var original *string
 	if originalEntryID != "" {
@@ -251,8 +249,6 @@ func waitFor(t *testing.T, timeout time.Duration, description string, condition 
 	}
 }
 
-// --- acceptance tests -------------------------------------------------------
-
 func TestRealRabbitMQConsumerAcceptance(t *testing.T) {
 	fixture := startRealFixture(t)
 	t.Cleanup(func() { fixture.close(t) })
@@ -294,7 +290,7 @@ func TestRealRabbitMQConsumerAcceptance(t *testing.T) {
 			return err == nil && balance.EntryCount == 1
 		})
 		publish(t, fixture.rabbitURL, eventPublishing(event))
-		time.Sleep(500 * time.Millisecond) // give the duplicate time to be (safely) reapplied
+		time.Sleep(500 * time.Millisecond)
 
 		balance, err := fixture.store.Balance(context.Background(), merchant, event.BusinessDate)
 		if err != nil || balance.EntryCount != 1 || balance.CreditsMinor != 5_000 {
@@ -349,7 +345,7 @@ func TestRealRabbitMQConsumerAcceptance(t *testing.T) {
 		poison := amqp091.Publishing{
 			ContentType: "application/json", DeliveryMode: amqp091.Persistent,
 			MessageId: syntheticEventID(merchantA, 1), Type: EventType,
-			Body: []byte(`{"event_id":"` + syntheticEventID(merchantA, 1) + `","event_type":"ledger.entry.confirmed.v1"`), // truncated: invalid JSON
+			Body: []byte(`{"event_id":"` + syntheticEventID(merchantA, 1) + `","event_type":"ledger.entry.confirmed.v1"`),
 		}
 		publish(t, fixture.rabbitURL, poison)
 
@@ -412,7 +408,7 @@ func TestRealRabbitMQConsumerAcceptance(t *testing.T) {
 		go func() { _ = restarted.Run(ctx) }()
 		waitFor(t, 5*time.Second, "restarted consumer ready", func() bool { return restarted.Ready(ctx) == nil })
 
-		time.Sleep(500 * time.Millisecond) // allow the unacked, redelivered message to be reprocessed
+		time.Sleep(500 * time.Millisecond)
 		balance, err = fixture.store.Balance(context.Background(), merchant, event.BusinessDate)
 		if err != nil || balance.EntryCount != 1 || balance.CreditsMinor != 12_500 {
 			t.Fatalf("redelivery after crash did not preserve exactly one financial effect: %+v (%v)", balance, err)
@@ -424,7 +420,7 @@ func TestRealRabbitMQConsumerAcceptance(t *testing.T) {
 		merchant := "70000000-0000-4000-8000-000000000007"
 		event := testEvent(merchant, 1, "credit", 2_500, "2026-07-31", "")
 		var failuresLeft atomic.Int32
-		failuresLeft.Store(5) // exceeds MaxAttempts(3) so it must escalate to DLQ
+		failuresLeft.Store(5)
 		injected := errors.New("injected transient dependency failure")
 		consumer := newRealConsumer(t, fixture, "acceptance-exhaust", 3, func(domain.EntryConfirmed) error {
 			if failuresLeft.Add(-1) >= 0 {
@@ -450,10 +446,6 @@ func TestRealRabbitMQConsumerAcceptance(t *testing.T) {
 			t.Fatalf("event isolated to DLQ must not have produced a financial effect: %+v", balance)
 		}
 
-		// The operator fixes the root cause (simulated by disabling the
-		// injected failure) then replays the message straight from the
-		// DLQ back onto the main exchange -- an infrastructure action,
-		// not an application "reprocess" feature.
 		failuresLeft.Store(0)
 		replayFromDLQ(t, fixture.rabbitURL, event.EventID)
 

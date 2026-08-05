@@ -155,8 +155,7 @@ func (g *Gateway) Routes() []string {
 func (g *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	endpoint, matched := g.match(request.Method, request.URL.Path)
 	if !matched {
-		// A path the configuration does not declare has no route at all. This
-		// is what keeps admin, health, metrics and the internal RPC unreachable.
+
 		http.Error(writer, "no route", http.StatusNotFound)
 		return
 	}
@@ -177,8 +176,7 @@ func (g *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 	forwarded := g.forward(endpoint, request)
 	recorder := httptest.NewRecorder()
-	// The backend is invoked exactly once. No status, timeout or transport
-	// failure causes a second invocation of a command.
+
 	g.backends[route].serve(recorder, forwarded)
 
 	for name, values := range recorder.Header() {

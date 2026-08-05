@@ -107,9 +107,7 @@ func (r *DLQReprocessor) Reprocess(ctx context.Context, actor string) (Result, e
 }
 
 func (r *DLQReprocessor) audit(ctx context.Context, actor string, requestedAt time.Time, result Result, outcome string) {
-	// Audit recording uses context.WithoutCancel: a caller-cancelled context
-	// (e.g. the CLI process receiving SIGTERM mid-run) must not erase the
-	// audit trail of work that already committed.
+
 	auditCtx := context.WithoutCancel(ctx)
 	_, _ = r.pool.Exec(auditCtx, `
 		INSERT INTO consolidation.dlq_reprocess_audit (

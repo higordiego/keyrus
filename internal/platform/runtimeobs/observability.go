@@ -105,7 +105,7 @@ func (m *Metrics) observeDuration(duration time.Duration) {
 			m.durationBucketHits[i].Add(1)
 		}
 	}
-	m.durationBucketHits[len(durationBuckets)].Add(1) // +Inf
+	m.durationBucketHits[len(durationBuckets)].Add(1)
 }
 
 // Handler exposes Prometheus text format only on the management listener.

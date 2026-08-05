@@ -16,8 +16,8 @@ func TestObserveDurationProducesCumulativeHistogramBuckets(t *testing.T) {
 	metrics := &Metrics{}
 	request := httptest.NewRequest("GET", "/v1/entries", nil)
 
-	metrics.Observe(request, 200, 30*time.Millisecond)  // fits every bucket
-	metrics.Observe(request, 200, 750*time.Millisecond) // fits only 1s, 2.5s, 5s, +Inf
+	metrics.Observe(request, 200, 30*time.Millisecond)
+	metrics.Observe(request, 200, 750*time.Millisecond)
 
 	var buffer strings.Builder
 	metrics.writeDurationHistogram(&buffer, "ledger-api")
@@ -27,9 +27,9 @@ func TestObserveDurationProducesCumulativeHistogramBuckets(t *testing.T) {
 		le   string
 		want string
 	}{
-		{"0.05", "1"}, // only the 30ms observation
-		{"0.5", "1"},  // still only the 30ms observation
-		{"1", "2"},    // both observations
+		{"0.05", "1"},
+		{"0.5", "1"},
+		{"1", "2"},
 		{"+Inf", "2"},
 	}
 	for _, test := range cases {
