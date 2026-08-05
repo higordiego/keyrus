@@ -13,7 +13,7 @@ Este diretório concentra o harness executável. A documentação prática está
 - `TestImplementedScenarios` conecta `steps.Initialize`, `bddguard.ValidateStepSources` e `bddrunner.Run`.
 - Fixtures de política provam que binding real com efeito/asserção externa passa, enquanto tag sem binding, manifesto/tag inválida, `pending`, `skip`, shadowing, selector importado, wrapper no-op, estado somente local e handlers triviais por `Step`/`Given`/`When`/`Then` falham.
 - O catálogo é deliberadamente plano nesta versão: um bloco `Regra:` é rejeitado com erro preciso, nunca descartado silenciosamente.
-- O manifesto liga 10 tags T02 a evidência fresca do runtime real; os demais cenários continuam pendentes.
+- O manifesto liga 25 tags (T02, T04, T06) a evidência fresca do runtime real; os demais 56 cenários continuam pendentes.
 - Cenários fora do manifesto são especificações aprovadas, não testes executados nem evidência de implementação.
 - `undefined`, `pending`, `ambiguous` ou `skipped` não podem contar como sucesso quando um cenário entrar na suíte implementada.
 - Múltiplas tags do manifesto usam a sintaxe OR legada do Godog v0.15.1 (`@A,@B`); um teste executa duas tags e impede seleção vazia por filtro incompatível.
@@ -25,7 +25,7 @@ make bdd-parse
 go test -race ./test/bdd/...
 ```
 
-O resultado esperado é `14 features`, `81 unique scenarios` e `10 implemented` (15 execuções após expandir os outlines T02). A suíte Godog exige evidência íntegra, fresca e específica por cenário/caso/oráculo, emitida por Keycloak, KrakenD, imagens finais das APIs, Collector e fault backend reais; sem esse artefato ela própria executa o E2E. Isso não declara comportamento financeiro, persistência ou mensageria.
+O resultado esperado é `14 features`, `81 unique scenarios` e `25 implemented` (30 cenários / 165 steps executados após expandir os outlines). A suíte Godog exige evidência íntegra, fresca e específica por cenário/caso/oráculo, emitida por Keycloak, KrakenD, imagens finais das APIs, Collector e fault backend reais; sem esse artefato ela própria executa o E2E. Isso não declara comportamento financeiro, persistência ou mensageria.
 
 `make reports` limpa os arquivos anteriores, executa os produtores de `bdd-catalog.json` e `go-test.json` mesmo se um deles falhar e retorna o primeiro código de falha observado; o CI publica a evidência corrente como artefato. As saídas são transitórias, ignoradas pelo Git e não estão presentes em um clone até a geração.
 

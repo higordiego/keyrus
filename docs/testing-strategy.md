@@ -23,7 +23,7 @@ flowchart LR
 | Implementado | A tag está no manifesto e possui binding real, fixture e asserção contra o sistema. |
 | Verificado | O cenário implementado passou no ambiente exigido e publicou a evidência definida nesta estratégia. |
 
-No estado atual existem **81 aprovados, 71 pendentes de implementação e 10 tags T02 implementadas/verificadas pelo runtime de segurança**.
+No estado atual existem **81 aprovados, 56 pendentes de implementação e 25 tags implementadas/verificadas** (`make bdd-parse`), cobrindo T02 (identidade/gateway), T04/T06 (comunicação entre serviços e consolidação assíncrona) e resultados financeiros exatos.
 
 ## Níveis de teste
 
@@ -75,24 +75,24 @@ Esta análise AST deliberadamente não usa tipos: métodos homônimos em recepto
 
 ### Estado atual do wiring
 
-O manifesto liga 10 tags T02 a `TestImplementedScenarios`, `test/bdd/steps.Initialize`, `internal/bddrunner.Run` e `internal/bddguard`. Os bindings exigem evidência estruturada produzida pelo E2E real com Keycloak, KrakenD, imagens finais das APIs e Collector; execução Godog isolada dispara esse runtime antes dos cenários.
+O manifesto liga 25 tags (T02, T04, T06) a `TestImplementedScenarios`, `test/bdd/steps.Initialize`, `internal/bddrunner.Run` e `internal/bddguard`. Os bindings exigem evidência estruturada produzida pelo E2E real com Keycloak, KrakenD, imagens finais das APIs e Collector; execução Godog isolada dispara esse runtime antes dos cenários.
 
 Consequências práticas:
 
-- o `PASS` atual prova catálogo, parsing, reconciliação e os oráculos literais dos 10 cenários T02 contra runtime real;
+- o `PASS` atual prova catálogo, parsing, reconciliação e os oráculos literais das 25 tags implementadas contra runtime real;
 - adicionar uma tag ao manifesto sem binding real fará o runner reprovar por step indefinido;
 - fixtures automatizadas continuam provando que tag sem binding, manifesto/tag inválida, undefined, pending, skip e handler vazio falham;
 - não existe filtro local para executar uma única tag implementada; a suíte usa o manifesto inteiro.
 
-A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a allowlist versionada continua sendo a seleção oficial. As tags atuais provam somente identidade, gateway, transporte gRPC e telemetria do T02, nunca regras financeiras.
+A ausência de filtro ad hoc é uma limitação de ergonomia, não um bypass: a allowlist versionada continua sendo a seleção oficial. As tags atuais cobrem identidade, gateway, transporte gRPC, telemetria (T02), comunicação entre serviços e consolidação assíncrona (T04/T06), e o cálculo de resultados financeiros exatos -- já incluindo regras financeiras, não só borda/identidade. `@SCN-RNF02-*`/`@SCN-RNF04-002..003`/`@SCN-RNF09-003` (o cenário completo de 2 minutos de queda com 6.000 lançamentos) permanecem fora do manifesto -- ver nota em `features/implemented_scenarios.txt` e a linha de reconciliação/DLQ abaixo.
 
 ## Comandos locais
 
 | Objetivo | Comando | Critério de sucesso atual |
 |---|---|---|
-| Validar catálogo | `make bdd-parse` | `validated 14 features, 81 unique scenarios, 10 implemented` |
-| Testar harness BDD | `go test -race ./test/bdd/...` | parser, catálogo, inventário Godog, guards, fixtures de política e 10 cenários T02 verdes; sem evidência fresca a suíte inicia o E2E |
-| Rodar a suíte implementada | `go test -race ./test/bdd -run '^TestImplementedScenarios$' -v` | 10 cenários/15 execuções do manifesto passam usando resultados estruturados do runtime real |
+| Validar catálogo | `make bdd-parse` | `validated 14 features, 81 unique scenarios, 25 implemented` |
+| Testar harness BDD | `go test -race ./test/bdd/...` | parser, catálogo, inventário Godog, guards, fixtures de política e as 25 tags implementadas verdes; sem evidência fresca a suíte inicia o E2E |
+| Rodar a suíte implementada | `go test -race ./test/bdd -run '^TestImplementedScenarios$' -v` | as 25 tags do manifesto (30 cenários/165 steps após expandir os outlines) passam usando resultados estruturados do runtime real |
 | Rodar todos os testes Go | `go test -race ./...` | todos os pacotes verdes; pode depender de gerados/recortes ainda em construção |
 | Rodar gates do repositório | `make ci` | geração, formato, contratos, build, testes e catálogo verdes |
 | Gerar relatórios básicos | `make reports` | limpa evidência anterior, executa os dois produtores mesmo se um falhar, preserva o primeiro código de falha e produz `evidence/reports/ci/go-test.json`, `bdd-catalog.json` e metadados; os resultados são ignorados pelo Git |
@@ -144,23 +144,25 @@ Sem impor ainda um script de CI, os relatórios devem convergir para uma estrutu
 
 ```text
 evidence/reports/
-  bdd-catalog.json          # gerado por make reports/CI; ignorado no clone
-  go-test.json              # gerado por make reports/CI; ignorado no clone
-  godog/                    # resultado por SCN, ainda ausente
-  resilience/               # fault injection e reconciliação, ainda ausente
-  k6/                       # summary e configuração de carga, ainda ausente
-  security-observability/   # traces, métricas e alertas, ainda ausente
+  bdd-catalog.json            # gerado por make reports/CI; ignorado no clone
+  go-test.json                # gerado por make reports/CI; ignorado no clone
+  load-test-summary.json      # k6 via Edge (100 VUs, todas as rotas); make load-test
+  load-test-backend-summary.json  # k6 direto no domínio; make load-test-backend
+  security/, policy/, build/, integration/  # gerados por make security/policy/build-validation/integration
+  godog/                      # resultado por SCN, ainda ausente
+  resilience/                 # fault injection e reconciliação, ainda ausente
+  security-observability/     # traces, métricas e alertas, ainda ausente
 ```
 
 Arquivos gerados não substituem uma síntese curta com ambiente, commit, decisão de aceite e links para os dados brutos.
 
 ## Lacunas documentadas
 
-- 10/81 cenários têm bindings executáveis no manifesto; os outros 71 permanecem pendentes.
+- 25/81 cenários têm bindings executáveis no manifesto; os outros 56 permanecem pendentes.
 - Não há execução seletiva local por uma única `@SCN-*` sem alterar o manifesto.
 - Não há relatório Godog Cucumber/JUnit por tag.
-- Não há script/configuração k6 nem relatório do pico.
-- Há evidência Testcontainers, multi-tenant, fault fixture de EOF e observabilidade para o T02; DLQ, reconciliação financeira e demais tickets continuam sem evidência.
+- `test/k6/load.js` (via Edge, 100 VUs em todas as rotas) e `test/k6/load-backend.js` (direto no domínio, bypass do Edge) existem e têm relatório versionado em `evidence/reports/`; o cenário de pico completo do RNF-03 (`@SCN-RNF03-001`, 15.000 chegadas a 50 RPS/5 min) ainda não tem binding BDD, só a evidência k6 direta -- ver `docs/testing-traceability.md`.
+- Reconciliação e DLQ têm evidência real (T08): worker com testes Testcontainers reais de corte concorrente, repetição, falha parcial e stream interrompido (`services/consolidation/internal/reconciliation`), e comando de reprocessamento de DLQ protegido/auditado. O que falta é só o binding BDD ponta a ponta do cenário completo de 2 minutos de queda com 6.000 lançamentos (`@SCN-RNF02-*`), não a implementação em si.
 - `make reports` produz apenas catálogo e saída JSON do `go test`; esses arquivos são transitórios, ignorados pelo Git e publicados pelo CI.
 
-Essas lacunas mantêm 71 cenários pendentes, mas não invalidam os 10 cenários T02 verificados nem o catálogo aprovado.
+Essas lacunas mantêm 56 cenários pendentes, mas não invalidam as 25 tags verificadas nem o catálogo aprovado.

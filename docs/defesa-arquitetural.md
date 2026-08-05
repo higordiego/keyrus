@@ -35,7 +35,7 @@ flowchart LR
     T02 --> T03B[T03B\nAPI pública Ledger]
     T03A --> T03B
     T02 --> T04[T04\ngRPC interno]
-    T03B --> T07[T07-T12\nAPI consolidado, reconciliação,\nobservabilidade, Swarm, carga, release]
+    T03B --> T07[T07-T12\nAPI consolidado, reconciliação,\nobservabilidade, Docker Compose, carga, release]
     T06B --> T07
 ```
 

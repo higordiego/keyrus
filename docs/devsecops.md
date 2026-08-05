@@ -18,9 +18,9 @@ O Gitleaks verifica apenas a ancestralidade da branch atual (`HEAD`) para que re
 
 O modo de texto do govulncheck é a execução bloqueante; JSON é executado separadamente como evidência porque o modo JSON pode retornar zero enquanto reporta traços alcançáveis (reachable traces). Seu fixture negativo faz o build de um módulo temporário com uma chamada alcançável (reachable call) conhecida e invoca o mesmo wrapper de produção. O Trivy sempre emite JSON com exit zero, então o `cmd/securitypolicy` aplica a política bloqueante de severity/fix; o fixture sintético do Trivy exercita aquele exato parser.
 
-Ainda não há um alvo de `integration`: testes de contrato de API e o catálogo Godog já fazem parte da CI e não provam um boundary (limite) externo. O primeiro produtor de datastore, broker ou contêiner deve materializar testes de integração e só então adicioná-lo à full validation (validação completa).
+`make integration` já existe e sobe PostgreSQL, RabbitMQ, Keycloak e KrakenD reais via Testcontainers: `test/bdd` (Godog contra bindings reais), `services/consolidation/internal/adapters/outbound/postgres` e `services/ledger/internal/outbox` provam boundaries externos de verdade, não só o catálogo/contrato estático. `make ci` roda esse alvo como parte do funil completo.
 
-Ainda não há um Containerfile ou produtor de imagens. A build validation (validação de build) registra o scan de imagens como não aplicável em vez de criar um job vazio. O ticket que introduz a primeira imagem deve adicionar o build e o Trivy image scanning juntos.
+A build validation já constrói e escaneia imagem real: `services/ledger/Containerfile.outbox-publisher` é buildado, tem SBOM (CycloneDX/SPDX) e scan Trivy bloqueante via `cmd/securitypolicy` (`scripts/build-validation-gate.sh`). Desde o T10, cada serviço tem seu próprio Containerfile em `deploy/identity/` e `deploy/edge/` para a stack completa do `docker-compose.yaml` (imagens pinadas por digest); o scan Trivy de CI cobre hoje só a imagem do outbox-publisher, então estender o `securitypolicy` para as demais imagens de serviço é trabalho futuro, não algo já feito.
 
 ## Workflows e stable checks (verificações estáveis)
 
