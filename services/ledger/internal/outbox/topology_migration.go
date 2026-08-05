@@ -58,8 +58,7 @@ func migrateTopology(
 		return report, fmt.Errorf("open topology preflight channel: %w", err)
 	}
 	if !upgrade {
-		// Removing the marker first makes every new publisher fail closed while
-		// rollback is in progress. Deletion is idempotent.
+
 		if err := preflight.ExchangeDelete(topologyCutoverMarker, false, false); err != nil {
 			_ = preflight.Close()
 			return report, fmt.Errorf("disable v2 publishers before rollback: %w", err)
@@ -178,10 +177,7 @@ func preflightExactLegacy(channel *amqp091.Channel, topology Topology) error {
 		"x-queue-type": "quorum", "x-dead-letter-exchange": topology.DLX,
 		"x-dead-letter-routing-key": topology.RoutingKey,
 	}
-	// AMQP passive queue inspection does not compare arguments. An idempotent
-	// active declaration is therefore used strictly as an assertion against the
-	// existing name. RabbitMQ either confirms exact equivalence or closes this
-	// preflight channel without changing the queue.
+
 	if _, err := channel.QueueDeclare(topology.Queue, true, false, false, false, legacyArguments); err != nil {
 		return fmt.Errorf("legacy topology preflight failed before mutation: queue %q arguments differ from 0ac21b5; pause and inspect manually: %w", topology.Queue, err)
 	}

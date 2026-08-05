@@ -17,6 +17,14 @@ const (
 	OperationStreamEntriesAtCut Operation = "/cashflow.ledger.internal.v1.LedgerInternalService/StreamEntriesAtCut"
 )
 
+// Operational commands, not exposed over any network surface: the caller
+// (the reconciliation-worker CLI) verifies a bearer token locally before
+// running the command, using the same Verifier/ScopePolicy shape as every
+// other protected surface, instead of trusting process ownership alone.
+const (
+	OperationReprocessDLQ Operation = "cashflow.reconciliation.ops/ReprocessDLQ"
+)
+
 // Scopes granted by the identity provider.
 const (
 	ScopeLedgerRead        = "ledger:read"
@@ -48,6 +56,14 @@ func InternalGRPCPolicy() ScopePolicy {
 	return ScopePolicy{
 		OperationGetWatermark:       {ScopeLedgerInternal},
 		OperationStreamEntriesAtCut: {ScopeLedgerInternal, ScopeOpsReconcile},
+	}
+}
+
+// ReconciliationOpsPolicy is the authorization policy of the reconciliation
+// worker's local operational commands (currently just DLQ reprocessing).
+func ReconciliationOpsPolicy() ScopePolicy {
+	return ScopePolicy{
+		OperationReprocessDLQ: {ScopeOpsReconcile},
 	}
 }
 

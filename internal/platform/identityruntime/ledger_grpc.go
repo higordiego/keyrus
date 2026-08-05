@@ -17,14 +17,14 @@ import (
 )
 
 type LedgerGRPCConfig struct {
-	Verifier       *auth.Verifier
-	Tenants        grpcsecurity.TenantAuthorizer
-	TLS            *tls.Config
-	Logger         *slog.Logger
-	Handler        ledgerrpc.Handler
-	MaxDeadline    time.Duration
-	MaxRecvBytes   int
-	MaxSendBytes   int
+	Verifier     *auth.Verifier
+	Tenants      grpcsecurity.TenantAuthorizer
+	TLS          *tls.Config
+	Logger       *slog.Logger
+	Handler      ledgerrpc.Handler
+	MaxDeadline  time.Duration
+	MaxRecvBytes int
+	MaxSendBytes int
 }
 
 // NewLedgerGRPCServer constructs a TLS-secured gRPC server bounded by the
@@ -71,7 +71,6 @@ func (a ledgerInternalAuthority) GetMerchantWatermark(_ context.Context, _ strin
 }
 
 func (a ledgerInternalAuthority) StreamEntriesAtCut(_ context.Context, _ string, _ uint64, _ func(ledgerrpc.Entry) error) error {
-	// T02 materializes transport security only. Financial streaming is introduced
-	// by the Ledger/reconciliation tickets, so an authorized empty cut is valid.
+
 	return nil
 }

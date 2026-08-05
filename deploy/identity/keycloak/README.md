@@ -1,30 +1,30 @@
 # Cashflow realm
 
-`realm-cashflow.json` is a credential-free Keycloak import template. It defines:
+`realm-cashflow.json` é um template de importação do Keycloak sem credenciais (credential-free). Ele define:
 
-- the public merchant application using Authorization Code with PKCE;
-- separate public and internal audiences;
-- least-privilege service identities for consolidation and reconciliation;
-- exact merchant, ledger, consolidation and operational scopes;
-- two local merchant fixtures whose `merchant_id` is emitted by a mapper.
+- a aplicação merchant pública usando Authorization Code com PKCE;
+- audiences públicas e internas separadas;
+- identidades de serviço com privilégio mínimo (least-privilege) para consolidação e reconciliação;
+- scopes exatos para merchant, ledger, consolidação e operações;
+- dois fixtures locais de merchant cujo `merchant_id` é emitido por um mapper.
 
-Render it outside the repository by supplying the four required secrets through
-the environment or Docker secrets under `/run/secrets`:
+Renderize-o fora do repositório fornecendo os quatro secrets necessários através
+do ambiente ou Docker secrets em `/run/secrets`:
 
 ```sh
 deploy/identity/keycloak/render-realm.sh /secure/runtime/realm-cashflow.json
 ```
 
-The renderer refuses empty or unresolved credentials and creates the result
-with mode `0600`. The generated file contains credentials and must never be
-committed or logged.
+O renderizador recusa credenciais vazias ou não resolvidas e cria o resultado
+com o modo `0600`. O arquivo gerado contém credenciais e nunca deve ser
+comitado ou registrado (logged).
 
-Production runtime configuration belongs to the deployment topology ticket. It
-must run Keycloak in optimized mode with an external PostgreSQL identity
-schema, at least two replicas, `jdbc-ping`, serial rollout, TLS-aware proxy
-settings, and health/metrics restricted to the management network. Only the
-OIDC paths enumerated in the KrakenD configuration are public.
+A configuração de runtime em produção pertence ao ticket de topologia de deployment. Ele
+deve executar o Keycloak no modo otimizado (optimized mode) com um esquema de identidade
+PostgreSQL externo, pelo menos duas réplicas, `jdbc-ping`, rollout serial, configurações de
+proxy cientes de TLS (TLS-aware) e health/metrics restritos à rede de gerenciamento. Apenas os
+caminhos OIDC enumerados na configuração do KrakenD são públicos.
 
 `go test ./test/integration -run TestKeycloakRealmWithRealIssuer -count=1 -v`
-imports the rendered realm into the pinned Keycloak image using Testcontainers
-and verifies real client-credential tokens through the production JWKS verifier.
+importa o realm renderizado para a imagem fixada (pinned) do Keycloak usando Testcontainers
+e verifica tokens client-credential reais através do verificador JWKS de produção.

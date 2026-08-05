@@ -1,0 +1,348 @@
+{
+  "info": {
+    "_postman_id": "b6e2a6b0-2f0a-4c7a-9d3a-0f2e9b7a2c11",
+    "name": "Fluxo de Caixa para Comerciantes",
+    "description": "Collection real e testada manualmente contra o stack local (`docker compose up`). Cobre autenticação (Keycloak via Edge), o Ledger (criar/listar/consultar lançamento, estornar) e o Consolidado (saldo diário), mais um teste rápido de isolamento multi-tenant.\n\nGerada a partir do contrato OpenAPI publicado em `api/openapi/cashflow-public-v1.swagger.json` e verificada rodando cada requisição contra o stack ao vivo antes de ser commitada -- não é um chute baseado só no código.\n\n## Como usar\n1. `go run scripts/generate-compose-secrets.go` (se ainda não gerou os certificados locais).\n2. `docker compose up -d --build` (perfil `app` por padrão).\n3. Importe esta collection no Postman.\n4. Rode **1. Autenticação > Obter Token (merchant-a)** primeiro -- ele salva o token na variável de collection `token`, usada automaticamente por todas as outras requisições.\n5. Rode o resto na ordem das pastas. **2. Ledger > Criar Lançamento** salva o `entryId` criado na variável `entry_id`, usada por Consultar/Estornar.\n\nO script de pré-requisição no nível da collection adiciona `Host: edge.cashflow.local` e `X-Forwarded-Proto: https` em toda chamada pelo Edge (porta 8080) -- sem isso o KrakenD faz `ssl_redirect` (301) porque não há um balanceador terminando TLS na frente dele localmente. Ver `README.md` raiz, seção \"Autenticação e Exemplos Práticos\", para o mesmo fluxo em `curl`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Toda requisição pelo Edge (KrakenD, porta 8080) precisa desses dois",
+          "// headers localmente: o Edge faz ssl_redirect por padrão e não há um",
+          "// balanceador terminando TLS na frente dele neste stack de dev, e o",
+          "// allowed_hosts do KrakenD só aceita Host: edge.cashflow.local.",
+          "// Aplicado sem condicional (inofensivo nas chamadas diretas ao Keycloak).",
+          "// Não confie em pm.request.url.toString() aqui: no momento em que o",
+          "// prerequest script roda, a URL ainda pode estar com {{edge_base_url}}",
+          "// não resolvido, então uma comparação por prefixo falha silenciosamente.",
+          "pm.request.headers.upsert({ key: 'Host', value: pm.collectionVariables.get('edge_host') });",
+          "pm.request.headers.upsert({ key: 'X-Forwarded-Proto', value: 'https' });"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "edge_base_url", "value": "http://localhost:8080", "type": "string" },
+    { "key": "keycloak_base_url", "value": "https://localhost:8443", "type": "string" },
+    { "key": "edge_host", "value": "edge.cashflow.local", "type": "string" },
+    { "key": "client_id", "value": "cashflow-merchant-app", "type": "string" },
+    { "key": "username_a", "value": "merchant-a", "type": "string" },
+    { "key": "password_a", "value": "merchant-a-pass", "type": "string" },
+    { "key": "username_b", "value": "merchant-b", "type": "string" },
+    { "key": "password_b", "value": "merchant-b-pass", "type": "string" },
+    { "key": "scope", "value": "ledger:write ledger:read consolidation:read", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "token_merchant_b", "value": "", "type": "string" },
+    { "key": "entry_id", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Autenticação",
+      "item": [
+        {
+          "name": "Obter Token (merchant-a)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token presente', function () { pm.expect(body.access_token).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('token', body.access_token);",
+                  "console.log('token de merchant-a salvo em {{token}}');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "password" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "username", "value": "{{username_a}}" },
+                { "key": "password", "value": "{{password_a}}" },
+                { "key": "scope", "value": "{{scope}}" }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloak_base_url}}/realms/cashflow/protocol/openid-connect/token",
+              "host": ["{{keycloak_base_url}}"],
+              "path": ["realms", "cashflow", "protocol", "openid-connect", "token"]
+            },
+            "description": "Vai direto no Keycloak (não passa pelo Edge), igual ao fluxo real do app do comerciante. `scope` precisa ser explícito -- sem ele o Keycloak emite um token válido mas sem nenhum escopo, e toda rota protegida rejeita com 401.\n\nEsta requisição usa TLS auto-assinado; a opção \"SSL certificate verification\" precisa estar desligada nas Settings do Postman (ou a requisição falha com erro de certificado)."
+          }
+        },
+        {
+          "name": "Obter Token (merchant-b)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('token_merchant_b', body.access_token);",
+                  "console.log('token de merchant-b salvo em {{token_merchant_b}}');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "password" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "username", "value": "{{username_b}}" },
+                { "key": "password", "value": "{{password_b}}" },
+                { "key": "scope", "value": "{{scope}}" }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloak_base_url}}/realms/cashflow/protocol/openid-connect/token",
+              "host": ["{{keycloak_base_url}}"],
+              "path": ["realms", "cashflow", "protocol", "openid-connect", "token"]
+            },
+            "description": "Segundo comerciante, usado só na pasta \"4. Isolamento Multi-Tenant\" para provar que merchant-b não enxerga dados de merchant-a."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Ledger",
+      "item": [
+        {
+          "name": "Criar Lançamento (crédito)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idempotency_key', require('uuid').v4 ? require('uuid').v4() : pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('entry confirmado', function () {",
+                  "    pm.expect(body.entry.state).to.eql('ENTRY_STATE_CONFIRMED');",
+                  "    pm.expect(body.entry.entryId).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('entry_id', body.entry.entryId);",
+                  "console.log('entryId salvo em {{entry_id}}: ' + body.entry.entryId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ENTRY_TYPE_CREDIT\",\n  \"amount\": \"150.00\",\n  \"currency\": \"BRL\",\n  \"businessDate\": \"2026-08-05\",\n  \"description\": \"Venda balcao - Postman\"\n}"
+            },
+            "url": {
+              "raw": "{{edge_base_url}}/v1/entries",
+              "host": ["{{edge_base_url}}"],
+              "path": ["v1", "entries"]
+            },
+            "description": "`Idempotency-Key` usa a variável dinâmica `{{$guid}}` do Postman -- um GUID novo a cada envio manual (\"Send\"), então repetir a requisição cria um lançamento novo, não reaplica o mesmo. Para testar idempotência de verdade, copie o valor gerado e cole fixo no header antes de reenviar: a segunda resposta deve trazer o mesmo `entryId`, sem duplicar o saldo.\n\n`businessDate` aceita `YYYY-MM-DD`; ajuste para a data de hoje se necessário -- o servidor valida contra o calendário/fuso do comerciante (D-30/D-31)."
+          }
+        },
+        {
+          "name": "Listar Lançamentos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('entries e um array', function () { pm.expect(body.entries).to.be.an('array'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": {
+              "raw": "{{edge_base_url}}/v1/entries?page_size=20",
+              "host": ["{{edge_base_url}}"],
+              "path": ["v1", "entries"],
+              "query": [
+                { "key": "page_size", "value": "20" },
+                { "key": "start_date", "value": "2026-07-01", "disabled": true },
+                { "key": "end_date", "value": "2026-08-31", "disabled": true },
+                { "key": "page_token", "value": "", "disabled": true }
+              ]
+            },
+            "description": "Paginação por cursor: use `nextPageToken` da resposta anterior no parâmetro `pageToken` para a próxima página."
+          }
+        },
+        {
+          "name": "Consultar Lançamento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('entryId confere com o criado', function () {",
+                  "    pm.expect(body.entry.entryId).to.eql(pm.collectionVariables.get('entry_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": {
+              "raw": "{{edge_base_url}}/v1/entries/{{entry_id}}",
+              "host": ["{{edge_base_url}}"],
+              "path": ["v1", "entries", "{{entry_id}}"]
+            },
+            "description": "Usa o `entry_id` salvo por \"Criar Lançamento\". Rode aquela requisição primeiro."
+          }
+        },
+        {
+          "name": "Estornar Lançamento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('estorno e um debito referenciando o original', function () {",
+                  "    pm.expect(body.reversal.type).to.eql('ENTRY_TYPE_DEBIT');",
+                  "    pm.expect(body.reversal.originalEntryId).to.eql(pm.collectionVariables.get('entry_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "url": {
+              "raw": "{{edge_base_url}}/v1/entries/{{entry_id}}/reversals",
+              "host": ["{{edge_base_url}}"],
+              "path": ["v1", "entries", "{{entry_id}}", "reversals"]
+            },
+            "description": "Cria uma compensação (débito) referenciando o lançamento original -- o registro original nunca é alterado, só ganha um `reversalEntryId` na leitura. Rodar de novo com o mesmo `entry_id` deve dar 409/erro de conflito (só um estorno por lançamento é permitido)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Consolidado",
+      "item": [
+        {
+          "name": "Consultar Saldo Diário",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('balances e um array', function () { pm.expect(body.balances).to.be.an('array'); });",
+                  "console.log('Se o state vier PROCESSING logo apos criar um lancamento, e esperado: o consolidado e assincrono. Reenvie em alguns segundos para ver UPDATED.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": {
+              "raw": "{{edge_base_url}}/v1/daily-balances?start_date=2026-08-01&end_date=2026-08-05",
+              "host": ["{{edge_base_url}}"],
+              "path": ["v1", "daily-balances"],
+              "query": [
+                { "key": "start_date", "value": "2026-08-01" },
+                { "key": "end_date", "value": "2026-08-05" }
+              ]
+            },
+            "description": "Ajuste `startDate`/`endDate` para o período em que você criou lançamentos. `state` pode vir `PROCESSING` por um instante logo após um `POST /v1/entries` (o Consolidado é atualizado de forma assíncrona via RabbitMQ) antes de virar `UPDATED`; isso é esperado, não um erro."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Isolamento Multi-Tenant",
+      "item": [
+        {
+          "name": "merchant-b NÃO consegue ver lançamento de merchant-a",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 ou 403 -- merchant-b nao acessa recurso de merchant-a', function () {",
+                  "    pm.expect([403, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token_merchant_b}}" }
+            ],
+            "url": {
+              "raw": "{{edge_base_url}}/v1/entries/{{entry_id}}",
+              "host": ["{{edge_base_url}}"],
+              "path": ["v1", "entries", "{{entry_id}}"]
+            },
+            "description": "Prova de isolamento por tenant: pega o `entry_id` que pertence a merchant-a (criado na pasta 2) e tenta acessá-lo autenticado como merchant-b. Deve dar 403 ou 404, nunca 200 -- resposta anti-enumeração, não deve revelar se o ID existe ou não para quem não é o dono.\n\nRode \"1. Autenticação > Obter Token (merchant-b)\" e \"2. Ledger > Criar Lançamento\" (como merchant-a) antes desta."
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -58,8 +58,7 @@ func Run(config Config) error {
 	if name == "" {
 		name = "implemented-bdd"
 	}
-	// Godog v0.15.1 uses the legacy Behat filter syntax: comma is OR.
-	// The words "or" and parentheses are treated as part of a literal tag.
+
 	tagExpression := strings.Join(config.Tags, ",")
 	status := godog.TestSuite{
 		Name:                name,

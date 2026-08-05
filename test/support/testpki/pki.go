@@ -28,7 +28,25 @@ type Bundle struct {
 	Consolidation Pair
 }
 
+// defaultValidity keeps New's existing behavior for every current
+// automated-test caller: short-lived, matching this package's "nothing here
+// is suitable for deployment" contract.
+const defaultValidity = 2 * time.Hour
+
 func New(directory string) (Bundle, error) {
+	return NewWithValidity(directory, defaultValidity)
+}
+
+// NewWithValidity is New with a caller-chosen certificate lifetime. It
+// exists for scripts/generate-compose-secrets.go: that script documents
+// itself in the README as the one-time setup step before a `docker compose
+// up` meant to run as a developer's local environment for an entire working
+// session, potentially many hours -- New's 2-hour window silently expired
+// mid-session (a real incident found while gathering T11 load evidence:
+// every authenticated request started failing TLS verification once the CA
+// aged past its NotAfter). Automated test callers should keep using New;
+// only a long-running manual Compose session needs a longer-lived bundle.
+func NewWithValidity(directory string, validity time.Duration) (Bundle, error) {
 	authorityKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return Bundle{}, err
@@ -38,7 +56,7 @@ func New(directory string) (Bundle, error) {
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "cashflow-test-ca"},
 		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.Add(2 * time.Hour),
+		NotAfter:              now.Add(validity),
 		IsCA:                  true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
@@ -55,22 +73,22 @@ func New(directory string) (Bundle, error) {
 	if err := writePEM(caPath, "CERTIFICATE", authorityDER, 0o600); err != nil {
 		return Bundle{}, err
 	}
-	keycloak, err := issue(directory, "keycloak", 2, authority, authorityKey, []string{"keycloak", "localhost", "edge.cashflow.local"}, []net.IP{net.ParseIP("127.0.0.1")}, x509.ExtKeyUsageServerAuth)
+	keycloak, err := issue(directory, "keycloak", 2, authority, authorityKey, []string{"keycloak", "localhost", "edge.cashflow.local"}, []net.IP{net.ParseIP("127.0.0.1")}, x509.ExtKeyUsageServerAuth, validity)
 	if err != nil {
 		return Bundle{}, err
 	}
-	ledger, err := issue(directory, "ledger-api", 3, authority, authorityKey, []string{"ledger-api", "localhost"}, []net.IP{net.ParseIP("127.0.0.1")}, x509.ExtKeyUsageServerAuth)
+	ledger, err := issue(directory, "ledger-api", 3, authority, authorityKey, []string{"ledger-api", "localhost"}, []net.IP{net.ParseIP("127.0.0.1")}, x509.ExtKeyUsageServerAuth, validity)
 	if err != nil {
 		return Bundle{}, err
 	}
-	consolidation, err := issue(directory, "consolidation", 4, authority, authorityKey, nil, nil, x509.ExtKeyUsageClientAuth)
+	consolidation, err := issue(directory, "consolidation", 4, authority, authorityKey, nil, nil, x509.ExtKeyUsageClientAuth, validity)
 	if err != nil {
 		return Bundle{}, err
 	}
 	return Bundle{CA: caPath, Keycloak: keycloak, Ledger: ledger, Consolidation: consolidation}, nil
 }
 
-func issue(directory, name string, serial int64, authority *x509.Certificate, authorityKey *rsa.PrivateKey, dns []string, ips []net.IP, usage x509.ExtKeyUsage) (Pair, error) {
+func issue(directory, name string, serial int64, authority *x509.Certificate, authorityKey *rsa.PrivateKey, dns []string, ips []net.IP, usage x509.ExtKeyUsage, validity time.Duration) (Pair, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return Pair{}, err
@@ -79,7 +97,7 @@ func issue(directory, name string, serial int64, authority *x509.Certificate, au
 		SerialNumber: big.NewInt(serial),
 		Subject:      pkix.Name{CommonName: name},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(2 * time.Hour),
+		NotAfter:     time.Now().Add(validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{usage},
 		DNSNames:     dns,

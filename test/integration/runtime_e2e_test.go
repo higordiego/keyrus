@@ -105,11 +105,7 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 		assertUID(t, ctx, stack.krakend, "65532")
 		assertContainerHealthy(t, ctx, stack.krakend)
 		assertHTTPStatus(t, stack.directHTTP, stack.ledgerMetrics+"/health/ready", http.StatusNoContent)
-		// /__health is the literal path the review found public: the built-in
-		// KrakenD endpoint bypasses the router entirely. It is now disabled
-		// (router.disable_health in krakend.json), so this exact path, hit the
-		// same way the reviewer reproduced it -- through the published port --
-		// must now return 404 like every other undeclared route.
+
 		privatePaths := []string{"/__health", "/health", "/health/ready", "/metrics", "/admin/realms/cashflow/users"}
 		statuses := make([]string, 0, len(privatePaths))
 		for _, path := range privatePaths {
@@ -283,13 +279,7 @@ func TestRealEdgeIdentityRuntime(t *testing.T) {
 	})
 
 	t.Run("mutated edge without auth/validator forwards invalid identity and the oracle detects it", func(t *testing.T) {
-		// This is the ticket's required negative case: a KrakenD instance whose
-		// /v1/entries GET endpoint has no auth/validator block will forward an
-		// unauthenticated request straight to the real Ledger. The Ledger's own
-		// middleware still rejects it (defense in depth), so the status code
-		// alone looks identical to the correctly configured edge. The
-		// pre-authentication entrypoint counter is what must differ, and the
-		// oracle must fail loudly when it does.
+
 		entrypointBefore := metricValue(t, stack, "cashflow_http_entrypoint_total")
 		request := newBypassEdgeRequest(t, stack, http.MethodGet, "/v1/entries")
 		response, err := newEdgeClient(t).Do(request)
@@ -1019,7 +1009,7 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 		t.Fatal(err)
 	}
 	temporary := t.TempDir()
-	// A stale unrelated credential helper must not break public image builds.
+
 	configurePublicDockerBuild(t, temporary)
 	pki, err := testpki.New(temporary)
 	if err != nil {
@@ -1110,7 +1100,7 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 		},
 
 		WaitingFor: wait.ForHTTP("/realms/cashflow/.well-known/openid-configuration").WithPort("8443/tcp").
-			WithTLS(true, &tls.Config{InsecureSkipVerify: true}).WithStartupTimeout(12 * time.Minute), //nolint:gosec -- ephemeral test CA
+			WithTLS(true, &tls.Config{InsecureSkipVerify: true}).WithStartupTimeout(12 * time.Minute),
 	})
 	keycloakBaseURL, err := keycloak.PortEndpoint(ctx, "8443/tcp", "https")
 	if err != nil {
@@ -1245,8 +1235,7 @@ func startRuntimeStack(t *testing.T, ctx context.Context) runtimeStack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The host port is mapped to localhost, while the ephemeral certificate is
-	// deliberately issued to the container-network identity used in production.
+
 	directHTTP.Transport.(*http.Transport).TLSClientConfig.ServerName = "keycloak"
 	return runtimeStack{ctx: ctx, keycloak: keycloak, ledger: ledger, consolidation: consolidation, krakend: krakend, collector: collector,
 		faultBackend: faultBackend, faultKrakend: faultKrakend, bypassKrakend: bypassKrakend, pki: pki,
@@ -1262,8 +1251,7 @@ func buildDockerImage(t *testing.T, ctx context.Context, repositoryRoot, image, 
 	command.Dir = repositoryRoot
 	buildkit := "1"
 	if strings.Contains(dockerfile, "krakend") {
-		// The KrakenD Go plugin must be built by the classic builder so its
-		// toolchain paths match the pinned runtime ABI exactly.
+
 		buildkit = "0"
 	}
 	command.Env = append(os.Environ(), "DOCKER_BUILDKIT="+buildkit)
@@ -1680,8 +1668,7 @@ func assertTraceLineage(t *testing.T, logs string, caller tracecontext.SpanConte
 	if strings.Contains(logs, "url.full") || strings.Contains(logs, "url.query") {
 		t.Fatalf("collector exported URL attributes that may contain OIDC credentials:\n%s", logs)
 	}
-	// The external caller span must be the parent of the HTTP server span; the
-	// same trace then contains distinct client and server gRPC spans.
+
 	if !strings.Contains(logs, "Parent ID      : "+caller.SpanID) {
 		t.Fatalf("collector export has no HTTP child of caller span %s:\n%s", caller.SpanID, logs)
 	}

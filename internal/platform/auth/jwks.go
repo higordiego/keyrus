@@ -106,9 +106,6 @@ func (c *JWKSCache) VerificationKey(ctx context.Context, keyID string) (crypto.P
 			return cached, nil
 		}
 
-		// A known key inside the stale window never waits behind remote I/O. The
-		// first caller starts one background refresh and every concurrent caller
-		// keeps authenticating from the immutable cached snapshot.
 		if withinStaleTolerance {
 			if refreshing == nil && refreshDue {
 				if done, claimed := c.claimRefresh(now); claimed {

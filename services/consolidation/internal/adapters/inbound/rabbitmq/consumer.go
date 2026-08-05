@@ -309,11 +309,7 @@ func (c *Consumer) processDelivery(ctx context.Context, delivery amqp091.Deliver
 	}
 	if c.config.AfterApply != nil {
 		if err := c.config.AfterApply(event); err != nil {
-			// The chaos hook (e.g. os.Exit) is expected to terminate the
-			// process before this line is reached in real crash tests; a
-			// returned error without termination is treated as fatal to
-			// the delivery so the caller never ACKs it, matching the
-			// commit-then-ACK invariant under test.
+
 			panic(fmt.Sprintf("AfterApply chaos hook returned without terminating: %v", err))
 		}
 	}

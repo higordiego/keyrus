@@ -399,12 +399,13 @@ func (s *Store) Balances(ctx context.Context, merchantID string, from, through t
 	if merchantID == "" || from.After(through) {
 		return nil, errors.New("merchant and valid balance range are required")
 	}
+	fmt.Printf("DEBUG Store.Balances: merchantID=%s, from=%v, through=%v, from_str=%s, through_str=%s\n", merchantID, from, through, from.Format("2006-01-02"), through.Format("2006-01-02"))
 	rows, err := s.pool.Query(ctx, `
 		SELECT merchant_id::text, business_date, credits_minor, debits_minor,
 			net_minor, entry_count, closing_balance_minor, version
 		FROM consolidation.daily_balance
 		WHERE merchant_id = $1 AND business_date BETWEEN $2 AND $3
-		ORDER BY business_date`, merchantID, from, through)
+		ORDER BY business_date`, merchantID, from.Format("2006-01-02"), through.Format("2006-01-02"))
 	if err != nil {
 		return nil, fmt.Errorf("list daily balances: %w", err)
 	}

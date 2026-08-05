@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	ledgerv1 "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/public/v1"
 	"github.com/higordiegoti/keyrus/internal/platform/auth"
 	"github.com/higordiegoti/keyrus/internal/platform/tenancy"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/application"
 	"github.com/higordiegoti/keyrus/services/ledger/internal/domain"
+	"github.com/higordiegoti/keyrus/services/ledger/internal/observability"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -22,11 +24,37 @@ import (
 // tenancy resolver for the HTTP gateway middleware.
 type Server struct {
 	ledgerv1.UnimplementedLedgerServiceServer
-	app *application.Service
+	app     *application.Service
+	metrics *observability.Metrics
 }
 
 func NewServer(app *application.Service) *Server {
 	return &Server{app: app}
+}
+
+// SetMetrics attaches the domain metrics recorder for mutation RPCs
+// (CreateEntry, CreateReversal). Left unset, CreateEntry and CreateReversal
+// keep working exactly as before -- every call site guards on it being nil
+// -- so existing callers (including tests) are unaffected.
+func (s *Server) SetMetrics(metrics *observability.Metrics) { s.metrics = metrics }
+
+// recordMutation classifies one committed CreateEntry/CreateReversal
+// outcome exactly the way mapError already does, so the metric and the RPC
+// status code can never disagree about what happened.
+func (s *Server) recordMutation(err error, started time.Time) {
+	if s.metrics == nil {
+		return
+	}
+	switch {
+	case err == nil:
+		s.metrics.RecordCommit(time.Since(started))
+	case errors.Is(err, application.ErrIdempotencyConflict), errors.Is(err, application.ErrAlreadyReversed):
+		s.metrics.RecordConflict()
+	case errors.Is(err, application.ErrInvalidArgument), errors.Is(err, application.ErrEntryNotFound):
+
+	default:
+		s.metrics.RecordFailure()
+	}
 }
 
 // OwnerOf resolves the merchant owner of a ledger entry for tenancy guards.
@@ -65,6 +93,7 @@ func (s *Server) CreateEntry(ctx context.Context, req *ledgerv1.CreateEntryReque
 		return nil, status.Error(codes.InvalidArgument, "invalid amount format")
 	}
 
+	started := time.Now()
 	result, err := s.app.CreateEntry(ctx, application.CreateEntryInput{
 		MerchantID:     identity.MerchantID,
 		IdempotencyKey: idempotencyKey,
@@ -76,6 +105,7 @@ func (s *Server) CreateEntry(ctx context.Context, req *ledgerv1.CreateEntryReque
 		TimeZone:       timezone,
 		Traceparent:    traceparent,
 	})
+	s.recordMutation(err, started)
 	if err != nil {
 		slog.Error("CreateEntry failed", "error", err)
 		return nil, mapError(err)
@@ -113,6 +143,7 @@ func (s *Server) CreateReversal(ctx context.Context, req *ledgerv1.CreateReversa
 		traceparent = vals[0]
 	}
 
+	started := time.Now()
 	result, err := s.app.ReverseEntry(ctx, application.ReverseEntryInput{
 		MerchantID:      identity.MerchantID,
 		OriginalEntryID: req.GetEntryId(),
@@ -120,6 +151,7 @@ func (s *Server) CreateReversal(ctx context.Context, req *ledgerv1.CreateReversa
 		TimeZone:        timezone,
 		Traceparent:     traceparent,
 	})
+	s.recordMutation(err, started)
 	if err != nil {
 		return nil, mapError(err)
 	}

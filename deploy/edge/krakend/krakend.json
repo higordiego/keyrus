@@ -83,8 +83,8 @@
         "qos/ratelimit/router": {
           "max_rate": 400,
           "capacity": 400,
-          "client_max_rate": 20,
-          "client_capacity": 20,
+          "client_max_rate": 400,
+          "client_capacity": 400,
           "strategy": "ip",
           "every": "1s"
         }
@@ -125,8 +125,8 @@
         "qos/ratelimit/router": {
           "max_rate": 400,
           "capacity": 400,
-          "client_max_rate": 20,
-          "client_capacity": 20,
+          "client_max_rate": 400,
+          "client_capacity": 400,
           "strategy": "ip",
           "every": "1s"
         }
@@ -167,8 +167,8 @@
         "qos/ratelimit/router": {
           "max_rate": 400,
           "capacity": 400,
-          "client_max_rate": 20,
-          "client_capacity": 20,
+          "client_max_rate": 400,
+          "client_capacity": 400,
           "strategy": "ip",
           "every": "1s"
         }
@@ -209,8 +209,8 @@
         "qos/ratelimit/router": {
           "max_rate": 400,
           "capacity": 400,
-          "client_max_rate": 20,
-          "client_capacity": 20,
+          "client_max_rate": 400,
+          "client_capacity": 400,
           "strategy": "ip",
           "every": "1s"
         }
@@ -251,8 +251,8 @@
         "qos/ratelimit/router": {
           "max_rate": 400,
           "capacity": 400,
-          "client_max_rate": 20,
-          "client_capacity": 20,
+          "client_max_rate": 400,
+          "client_capacity": 400,
           "strategy": "ip",
           "every": "1s"
         }
@@ -326,10 +326,10 @@
         "input_query_strings": ["*"],
         "extra_config": {
           "qos/ratelimit/router": {
-            "max_rate": 40,
-            "capacity": 40,
-            "client_max_rate": 5,
-            "client_capacity": 5,
+            "max_rate": 400,
+            "capacity": 400,
+            "client_max_rate": 400,
+            "client_capacity": 400,
             "strategy": "ip",
             "every": "1s"
           }
@@ -357,10 +357,10 @@
       "input_query_strings": [],
       "extra_config": {
         "qos/ratelimit/router": {
-          "max_rate": 40,
-          "capacity": 40,
-          "client_max_rate": 5,
-          "client_capacity": 5,
+          "max_rate": 400,
+          "capacity": 400,
+          "client_max_rate": 400,
+          "client_capacity": 400,
           "strategy": "ip",
           "every": "1s"
         }

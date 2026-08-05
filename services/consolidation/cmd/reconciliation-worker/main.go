@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	ledgerrpc "github.com/higordiegoti/keyrus/gen/go/cashflow/ledger/rpc"
+	"github.com/higordiegoti/keyrus/internal/platform/auth"
 	"github.com/higordiegoti/keyrus/internal/platform/auth/clientcredentials"
 	"github.com/higordiegoti/keyrus/internal/platform/grpcsecurity"
 	"github.com/higordiegoti/keyrus/internal/platform/identityruntime"
@@ -30,6 +31,10 @@ import (
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/domain"
 	"github.com/higordiegoti/keyrus/services/consolidation/internal/reconciliation"
 )
+
+// daemonActor identifies audit rows written by the unattended reconciliation
+// loop, as opposed to an operator invoking the "dlq" subcommand by hand.
+const daemonActor = "reconciliation-worker/daemon"
 
 func main() {
 	logger := slog.New(redact.NewHandler(slog.NewJSONHandler(os.Stdout, nil)))
@@ -116,7 +121,19 @@ func run(logger *slog.Logger) error {
 
 	client := ledgerrpc.NewClient(conn)
 	watermarkClient := adaptergrpc.NewLedgerWatermarkClient(client)
-	worker := reconciliation.NewWorker(pool, watermarkClient)
+	worker := reconciliation.NewWorker(pool, reconciliation.NewLedgerGRPCSource(watermarkClient))
+	domainMetrics := &reconciliation.Metrics{}
+	worker.SetMetrics(domainMetrics)
+
+	store, err := postgres.NewStore(pool)
+	if err != nil {
+		return err
+	}
+	projector, err := application.NewProjector(store)
+	if err != nil {
+		return err
+	}
+	reprocessor := reconciliation.NewDLQReprocessor(pool, projector)
 
 	var ready atomic.Bool
 	metrics := &runtimeobs.Metrics{}
@@ -126,13 +143,14 @@ func run(logger *slog.Logger) error {
 	}
 	defer managementListener.Close()
 
+	managementHandler := runtimeobs.ManagementHandler("reconciliation-worker", func(ctx context.Context) error {
+		if !ready.Load() {
+			return errors.New("not ready")
+		}
+		return nil
+	}, metrics)
 	managementServer := &http.Server{
-		Handler: runtimeobs.ManagementHandler("reconciliation-worker", func(ctx context.Context) error {
-			if !ready.Load() {
-				return errors.New("not ready")
-			}
-			return nil // DB is checked continuously by worker
-		}, metrics),
+		Handler:           appendDomainMetrics(managementHandler, domainMetrics),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      5 * time.Second,
@@ -149,56 +167,16 @@ func run(logger *slog.Logger) error {
 	args := os.Args[1:]
 	if len(args) == 0 {
 		go func() {
-			errCh <- runDaemon(ctx, pool, watermarkClient, worker, logger)
+			errCh <- runDaemon(ctx, pool, watermarkClient, worker, reprocessor, logger)
 		}()
 	} else {
 		go func() {
 			var e error
 			switch args[0] {
 			case "run":
-				if len(args) < 3 {
-					e = errors.New("usage: run <merchant_id> <business_date>")
-				} else {
-					merchantID := args[1]
-					dateStr := args[2]
-					date, parseErr := time.Parse(domain.DateLayout, dateStr)
-					if parseErr != nil {
-						e = fmt.Errorf("parse date: %w", parseErr)
-					} else {
-						cut, _, cutErr := watermarkClient.GetMerchantWatermark(ctx, merchantID)
-						if cutErr != nil {
-							e = fmt.Errorf("get watermark: %w", cutErr)
-						} else {
-							logger.Info("starting reconciliation", "merchant_id", merchantID, "date", dateStr, "cut", cut)
-							result, recErr := worker.Reconcile(ctx, merchantID, date, cut)
-							if recErr != nil {
-								e = recErr
-							} else {
-								logger.Info("reconciliation finished",
-									"merchant_id", merchantID,
-									"date", dateStr,
-									"missing", result.MissingEntries,
-									"extra", result.ExtraEntries,
-									"duplicates", result.DuplicatedEntries,
-									"diff", result.FinancialDifferenceMinor,
-								)
-							}
-						}
-					}
-				}
+				e = runReconcileCommand(ctx, watermarkClient, worker, logger, args[1:])
 			case "dlq":
-				logger.Info("starting dlq reprocess")
-				store, storeErr := postgres.NewStore(pool)
-				if storeErr != nil {
-					e = storeErr
-				} else {
-					projector, projErr := application.NewProjector(store)
-					if projErr != nil {
-						e = projErr
-					} else {
-						e = reprocessDLQ(ctx, pool, projector, logger)
-					}
-				}
+				e = runDLQCommand(ctx, reprocessor, logger)
 			default:
 				e = fmt.Errorf("unknown subcommand: %s", args[0])
 			}
@@ -223,6 +201,93 @@ func run(logger *slog.Logger) error {
 	return nil
 }
 
+func runReconcileCommand(ctx context.Context, watermarkClient *adaptergrpc.LedgerWatermarkClient, worker *reconciliation.Worker, logger *slog.Logger, args []string) error {
+	if len(args) < 2 {
+		return errors.New("usage: run <merchant_id> <business_date>")
+	}
+	merchantID := args[0]
+	dateStr := args[1]
+	date, err := time.Parse(domain.DateLayout, dateStr)
+	if err != nil {
+		return fmt.Errorf("parse date: %w", err)
+	}
+	cut, _, err := watermarkClient.GetMerchantWatermark(ctx, merchantID)
+	if err != nil {
+		return fmt.Errorf("get watermark: %w", err)
+	}
+	logger.Info("starting reconciliation", "merchant_id", merchantID, "date", dateStr, "cut", cut)
+	result, err := worker.Reconcile(ctx, merchantID, date, cut)
+	if err != nil {
+		return err
+	}
+	logger.Info("reconciliation finished",
+		"merchant_id", merchantID,
+		"date", dateStr,
+		"missing", result.MissingEntries,
+		"extra", result.ExtraEntries,
+		"duplicates", result.DuplicatedEntries,
+		"diff", result.FinancialDifferenceMinor,
+		"skipped", result.Skipped,
+	)
+	return nil
+}
+
+// runDLQCommand is the protected operational entry point T08 requires: it is
+// never a manual database query. Running it demands a bearer token bound to
+// an identity holding auth.ScopeOpsReconcile -- the same scope the realm
+// already grants only to reconciliation operators -- verified against the
+// same OIDC issuer/JWKS every other surface in this system trusts. The
+// verified subject becomes the audit actor, so every DLQ drain is
+// attributable to who ran it, not just to the service account that happens
+// to own the container.
+func runDLQCommand(ctx context.Context, reprocessor *reconciliation.DLQReprocessor, logger *slog.Logger) error {
+	verifier, err := identityruntime.Verifier(
+		requireEnv("CASHFLOW_OIDC_ISSUER"),
+		value("CASHFLOW_OPS_AUDIENCE", "cashflow-internal-api"),
+		requireEnv("CASHFLOW_OIDC_JWKS_URL"),
+		requireEnv("CASHFLOW_OIDC_CA_FILE"),
+		auth.MerchantForbidden,
+	)
+	if err != nil {
+		return fmt.Errorf("configure operator verifier: %w", err)
+	}
+
+	operatorToken := strings.TrimSpace(os.Getenv("CASHFLOW_OPERATOR_TOKEN"))
+	if operatorToken == "" {
+		return errors.New("CASHFLOW_OPERATOR_TOKEN is required to reprocess the DLQ")
+	}
+	identity, err := verifier.Verify(ctx, operatorToken)
+	if err != nil {
+		return fmt.Errorf("verify operator token: %w", err)
+	}
+	if err := auth.ReconciliationOpsPolicy().Authorize(auth.OperationReprocessDLQ, identity); err != nil {
+		return fmt.Errorf("authorize dlq reprocess: %w", err)
+	}
+
+	logger.Info("starting protected dlq reprocess", "actor", identity.Subject)
+	result, err := reprocessor.Reprocess(ctx, identity.Subject)
+	if err != nil {
+		return err
+	}
+	logger.Info("dlq reprocess finished", "actor", identity.Subject, "reprocessed", result.Reprocessed, "failed", result.Failed)
+	if result.Failed > 0 {
+		return fmt.Errorf("dlq reprocess left %d item(s) failing", result.Failed)
+	}
+	return nil
+}
+
+// appendDomainMetrics wraps the base management handler so GET /metrics also
+// carries the reconciliation domain counters alongside the generic HTTP
+// counters runtimeobs.ManagementHandler already exposes.
+func appendDomainMetrics(base http.Handler, domain *reconciliation.Metrics) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		base.ServeHTTP(writer, request)
+		if request.Method == http.MethodGet && request.URL.Path == "/metrics" {
+			_ = domain.WritePrometheus(writer)
+		}
+	})
+}
+
 func shutdownTracing(shutdown func(context.Context) error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -236,16 +301,13 @@ func value(name, fallback string) string {
 	return fallback
 }
 
-func runDaemon(ctx context.Context, pool *pgxpool.Pool, client *adaptergrpc.LedgerWatermarkClient, worker *reconciliation.Worker, logger *slog.Logger) error {
+// runDaemon is the unattended loop: it drains the DLQ and reconciles every
+// known merchant/date on a fixed tick. It is deliberately not gated by the
+// operator-token check in runDLQCommand -- that check protects the ad hoc
+// operational command, not the service's own scheduled work -- but every
+// drain it performs is still audited under daemonActor.
+func runDaemon(ctx context.Context, pool *pgxpool.Pool, client *adaptergrpc.LedgerWatermarkClient, worker *reconciliation.Worker, reprocessor *reconciliation.DLQReprocessor, logger *slog.Logger) error {
 	logger.Info("starting reconciliation daemon")
-	store, err := postgres.NewStore(pool)
-	if err != nil {
-		return err
-	}
-	projector, err := application.NewProjector(store)
-	if err != nil {
-		return err
-	}
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -255,10 +317,10 @@ func runDaemon(ctx context.Context, pool *pgxpool.Pool, client *adaptergrpc.Ledg
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			// Run DLQ reprocess first
-			_ = reprocessDLQ(ctx, pool, projector, logger)
+			if _, err := reprocessor.Reprocess(ctx, daemonActor); err != nil {
+				logger.Error("dlq reprocess failed", "error", err.Error())
+			}
 
-			// Get all merchants and dates to reconcile
 			rows, err := pool.Query(ctx, `SELECT DISTINCT merchant_id::text, business_date FROM consolidation.daily_balance`)
 			if err != nil {
 				logger.Error("query merchants failed", "error", err.Error())
@@ -285,62 +347,10 @@ func runDaemon(ctx context.Context, pool *pgxpool.Pool, client *adaptergrpc.Ledg
 					logger.Error("get watermark failed", "merchant", x.m, "error", err.Error())
 					continue
 				}
-				_, err = worker.Reconcile(ctx, x.m, x.d, cut)
-				if err != nil {
+				if _, err := worker.Reconcile(ctx, x.m, x.d, cut); err != nil {
 					logger.Error("reconcile failed", "merchant", x.m, "date", x.d, "error", err.Error())
 				}
 			}
 		}
 	}
-}
-
-func reprocessDLQ(ctx context.Context, pool *pgxpool.Pool, projector *application.Projector, logger *slog.Logger) error {
-	rows, err := pool.Query(ctx, `
-		SELECT d.event_id, d.payload 
-		FROM consolidation.dead_letter_event d
-		JOIN consolidation.event_pending p ON p.event_id = d.event_id
-		WHERE p.failure_class = 'dlq'
-	`)
-	if err != nil {
-		return fmt.Errorf("query dlq: %w", err)
-	}
-	defer rows.Close()
-
-	type dlqItem struct {
-		eventID string
-		payload []byte
-	}
-	var items []dlqItem
-	for rows.Next() {
-		var item dlqItem
-		if err := rows.Scan(&item.eventID, &item.payload); err != nil {
-			return err
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	for _, item := range items {
-		_, err := projector.ApplyPayload(ctx, item.payload)
-		if err != nil {
-			logger.Error("failed to reprocess dlq", "event_id", item.eventID, "error", err.Error())
-			continue
-		}
-
-		_, err = pool.Exec(ctx, `DELETE FROM consolidation.event_pending WHERE event_id = $1 AND failure_class = 'dlq'`, item.eventID)
-		if err != nil {
-			logger.Error("failed to clear pending dlq", "event_id", item.eventID, "error", err.Error())
-		}
-
-		_, err = pool.Exec(ctx, `DELETE FROM consolidation.dead_letter_event WHERE event_id = $1`, item.eventID)
-		if err != nil {
-			logger.Error("failed to clear dead letter", "event_id", item.eventID, "error", err.Error())
-		}
-
-		logger.Info("successfully reprocessed dlq", "event_id", item.eventID)
-	}
-
-	return nil
 }

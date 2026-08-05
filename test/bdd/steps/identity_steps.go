@@ -22,8 +22,6 @@ const (
 	timingRelativeMargin = 0.5
 )
 
-// --- @SCN-RNF06-001 -------------------------------------------------------
-
 func (w *world) givenValidMerchantCredential() error {
 	token, err := w.mintValid()
 	if err != nil {
@@ -54,8 +52,7 @@ func (w *world) thenMerchantIsDerivedFromTheIdentity() error {
 	if observations[0].MerchantID != merchantA {
 		return fmt.Errorf("merchant derived from the identity is %q, want %q", observations[0].MerchantID, merchantA)
 	}
-	// The merchant must come from the verified token, never from a header the
-	// caller could set.
+
 	if header := observations[0].Headers.Get("X-Merchant-Id"); header != "" {
 		return fmt.Errorf("a caller supplied merchant header survived into the handler: %q", header)
 	}
@@ -72,8 +69,6 @@ func (w *world) thenOperationStaysScopedToThatMerchant() error {
 	}
 	return nil
 }
-
-// --- @SCN-RNF06-002 -------------------------------------------------------
 
 func (w *world) givenCredentialCondition(condition string) error {
 	token, err := w.mintCondition(condition)
@@ -116,8 +111,6 @@ func (w *world) thenNoFinancialDataChangedOrLeaked() error {
 	}
 	return nil
 }
-
-// --- @SCN-RNF06-003 -------------------------------------------------------
 
 func (w *world) givenResourceBelongsToAnotherMerchant() error {
 	token, err := w.mintValid(auth.ScopeLedgerRead)
