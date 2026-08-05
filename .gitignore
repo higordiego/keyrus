@@ -1,5 +1,6 @@
 .tools/
 .claude/
+.DS_Store
 coverage.out
 evidence/reports/*
 !evidence/reports/.gitkeep
