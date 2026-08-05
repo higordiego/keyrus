@@ -81,10 +81,10 @@
           "operation_debug": false
         },
         "qos/ratelimit/router": {
-          "max_rate": 400,
-          "capacity": 400,
-          "client_max_rate": 400,
-          "client_capacity": 400,
+          "max_rate": 2000,
+          "capacity": 2000,
+          "client_max_rate": 2000,
+          "client_capacity": 2000,
           "strategy": "ip",
           "every": "1s"
         }
@@ -123,10 +123,10 @@
           "operation_debug": false
         },
         "qos/ratelimit/router": {
-          "max_rate": 400,
-          "capacity": 400,
-          "client_max_rate": 400,
-          "client_capacity": 400,
+          "max_rate": 2000,
+          "capacity": 2000,
+          "client_max_rate": 2000,
+          "client_capacity": 2000,
           "strategy": "ip",
           "every": "1s"
         }
@@ -165,10 +165,10 @@
           "operation_debug": false
         },
         "qos/ratelimit/router": {
-          "max_rate": 400,
-          "capacity": 400,
-          "client_max_rate": 400,
-          "client_capacity": 400,
+          "max_rate": 2000,
+          "capacity": 2000,
+          "client_max_rate": 2000,
+          "client_capacity": 2000,
           "strategy": "ip",
           "every": "1s"
         }
@@ -207,10 +207,10 @@
           "operation_debug": false
         },
         "qos/ratelimit/router": {
-          "max_rate": 400,
-          "capacity": 400,
-          "client_max_rate": 400,
-          "client_capacity": 400,
+          "max_rate": 2000,
+          "capacity": 2000,
+          "client_max_rate": 2000,
+          "client_capacity": 2000,
           "strategy": "ip",
           "every": "1s"
         }
@@ -249,10 +249,10 @@
           "operation_debug": false
         },
         "qos/ratelimit/router": {
-          "max_rate": 400,
-          "capacity": 400,
-          "client_max_rate": 400,
-          "client_capacity": 400,
+          "max_rate": 2000,
+          "capacity": 2000,
+          "client_max_rate": 2000,
+          "client_capacity": 2000,
           "strategy": "ip",
           "every": "1s"
         }
@@ -326,10 +326,10 @@
         "input_query_strings": ["*"],
         "extra_config": {
           "qos/ratelimit/router": {
-            "max_rate": 400,
-            "capacity": 400,
-            "client_max_rate": 400,
-            "client_capacity": 400,
+            "max_rate": 2000,
+            "capacity": 2000,
+            "client_max_rate": 2000,
+            "client_capacity": 2000,
             "strategy": "ip",
             "every": "1s"
           }
@@ -357,10 +357,10 @@
       "input_query_strings": [],
       "extra_config": {
         "qos/ratelimit/router": {
-          "max_rate": 400,
-          "capacity": 400,
-          "client_max_rate": 400,
-          "client_capacity": 400,
+          "max_rate": 2000,
+          "capacity": 2000,
+          "client_max_rate": 2000,
+          "client_capacity": 2000,
           "strategy": "ip",
           "every": "1s"
         }
