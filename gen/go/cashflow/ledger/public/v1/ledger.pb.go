@@ -726,7 +726,7 @@ const file_cashflow_ledger_public_v1_ledger_proto_rawDesc = "" +
 	"\x14ENTRY_STATE_REVERSED\x10\x022\xda\x12\n" +
 	"\rLedgerService\x12\xa0\x05\n" +
 	"\vCreateEntry\x12-.cashflow.ledger.public.v1.CreateEntryRequest\x1a..cashflow.ledger.public.v1.CreateEntryResponse\"\xb1\x04\x92A\x97\x04\x12\x1fCreate a confirmed ledger entry\x1a_Creates a durable credit or debit. The Idempotency-Key is scoped to the authenticated merchant.JU\n" +
-	"\x03201\x12N\n" +
+	"\x03200\x12N\n" +
 	"\x18Entry confirmed durably.\x122\n" +
 	"0\x1a..cashflow.ledger.public.v1.CreateEntryResponseJL\n" +
 	"\x03400\x12E\n" +
@@ -760,7 +760,7 @@ const file_cashflow_ledger_public_v1_ledger_proto_rawDesc = "" +
 	"\x03403\x122\n" +
 	"0Authenticated identity lacks the required scope.\x82\xd3\xe4\x93\x02\r\x12\v/v1/entries\x12\xd1\x06\n" +
 	"\x0eCreateReversal\x120.cashflow.ledger.public.v1.CreateReversalRequest\x1a1.cashflow.ledger.public.v1.CreateReversalResponse\"\xd9\x05\x92A\xad\x05\x12\x1bCreate an integral reversal\x1a~Creates one confirmed compensating entry. Reads project the original as reversed without updating its stored record or values.Je\n" +
-	"\x03201\x12^\n" +
+	"\x03200\x12^\n" +
 	"%Compensating entry confirmed durably.\x125\n" +
 	"3\x1a1.cashflow.ledger.public.v1.CreateReversalResponseJ6\n" +
 	"\x03400\x12/\n" +

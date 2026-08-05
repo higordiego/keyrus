@@ -136,7 +136,7 @@
         "description": "Creates a durable credit or debit. The Idempotency-Key is scoped to the authenticated merchant.",
         "operationId": "LedgerService_CreateEntry",
         "responses": {
-          "201": {
+          "200": {
             "description": "Entry confirmed durably.",
             "schema": {
               "$ref": "#/definitions/v1CreateEntryResponse"
@@ -235,7 +235,7 @@
         "description": "Creates one confirmed compensating entry. Reads project the original as reversed without updating its stored record or values.",
         "operationId": "LedgerService_CreateReversal",
         "responses": {
-          "201": {
+          "200": {
             "description": "Compensating entry confirmed durably.",
             "schema": {
               "$ref": "#/definitions/v1CreateReversalResponse"

@@ -27,7 +27,7 @@ service LedgerService {
         }
       }
       responses: {
-        key: "201"
+        key: "200"
         value: {
           description: "Entry confirmed durably."
           schema: {
@@ -122,7 +122,7 @@ service LedgerService {
         }
       }
       responses: {
-        key: "201"
+        key: "200"
         value: {
           description: "Compensating entry confirmed durably."
           schema: {

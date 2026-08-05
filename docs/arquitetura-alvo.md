@@ -92,7 +92,7 @@ sequenceDiagram
     DB_L-->>L: COMMIT
     end
     
-    L-->>C: HTTP 201 Created
+    L-->>C: HTTP 200 OK (entry confirmado)
 
     note over MQ, DB_L: Processamento Assíncrono (Desacoplado)
     DB_L->>MQ: Outbox Publisher envia mensagem pro broker
