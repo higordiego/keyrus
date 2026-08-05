@@ -1,11 +1,20 @@
-
+# Profiles: `app` (default via .env's COMPOSE_PROFILES=app -- `docker compose
+# up` with no flags brings up the full business stack, matching T10's
+# acceptance criterion), `observability` (Prometheus/Jaeger/Grafana, opt in
+# with `docker compose --profile app --profile observability up`), and
+# `load-test` (the k6 service, opt in with `--profile load-test run k6`; the
+# host-based `make load-test` target keeps working unchanged).
+#
+# Every image below is pinned by digest, including locally-built application
+# images (tagged ${CASHFLOW_VERSION:-dev} instead of `latest`) -- see each
+# `# <tag>` comment for the human-readable version the digest resolves to.
 
 services:
   # ---------------------------------------------------------
   # INFRASTRUCTURE
   # ---------------------------------------------------------
   postgres:
-    image: postgres:17.6-alpine
+    image: postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94 # postgres:17.6-alpine
     environment:
       POSTGRES_USER: cashflow
       POSTGRES_PASSWORD: ${CASHFLOW_DB_PASSWORD:-secret}
@@ -16,25 +25,39 @@ services:
       - cashflow-net
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cashflow -d cashflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles: ["app"]
 
   rabbitmq:
-    image: rabbitmq@sha256:d7af1c87c5f1eda13fcfca06db452bf3aeab6619fc3358b68535c0c02c4e52bc
+    image: rabbitmq@sha256:d7af1c87c5f1eda13fcfca06db452bf3aeab6619fc3358b68535c0c02c4e52bc # RabbitMQ 3.13.7 (confirmed via `rabbitmqctl version`); pinned before this session, exact original tag not recorded
     environment:
       RABBITMQ_DEFAULT_USER: cashflow
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-secret}
     ports:
       - "5672:5672"
-      - "15672:15672"
+      - "15672:15672" # management UI
+      - "15692:15692" # rabbitmq_prometheus scrape endpoint (ready/unacked/consumer lag/queue depth)
     networks:
       - cashflow-net
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./deploy/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    profiles: ["app"]
 
   keycloak:
     build:
       context: .
       dockerfile: deploy/identity/keycloak.Containerfile
-    image: cashflow-keycloak:latest
+    image: cashflow-keycloak:${CASHFLOW_VERSION:-dev}
     command: start --optimized --import-realm --http-enabled=false --https-port=8443 --https-certificate-file=/etc/cashflow/keycloak.crt --https-certificate-key-file=/etc/cashflow/keycloak.key --hostname-strict=false
     environment:
       KC_DB: postgres
@@ -56,20 +79,39 @@ services:
     volumes:
       - ./deploy/identity/keycloak/realm-cashflow.json:/opt/keycloak/data/import/realm.json:ro
       - ./secrets/certs:/etc/cashflow:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # This image ships neither curl nor wget (confirmed: only /bin/sh and
+      # /bin/bash exist), and the management interface on 9000 is HTTPS-only
+      # (inherits the main listener's TLS config -- see
+      # deploy/observability/prometheus/prometheus.yml's Keycloak scrape
+      # target for the same finding), so a real HTTP/TLS health request needs
+      # tooling this image does not have. Quarkus does not open port 9000 at
+      # all until startup -- including the realm import -- has finished (see
+      # the "Management interface listening on https://0.0.0.0:9000" log
+      # line, which is the very last line Keycloak prints on boot), so a bare
+      # TCP connect through bash's /dev/tcp is a reliable enough readiness
+      # signal without needing to speak TLS.
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    profiles: ["app"]
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.135.0
+    image: otel/opentelemetry-collector-contrib@sha256:89107a3a8f4636a396927edf7025bb9614b8da2d92f4cc3f43109e8d115736e2 # 0.135.0
     command: ["--config=/etc/otelcol/config.yaml"]
     networks:
       - cashflow-net
     volumes:
       - ./deploy/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
-    depends_on:
-      - jaeger
-      - prometheus
+    profiles: ["app"]
 
   prometheus:
-    image: prom/prometheus:v3.2.0
+    image: prom/prometheus@sha256:5888c188cf09e3f7eebc97369c3b2ce713e844cdbd88ccf36f5047c958aea120 # v3.2.0
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -77,12 +119,14 @@ services:
       - cashflow-net
     volumes:
       - ./deploy/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
+    profiles: ["observability"]
 
   jaeger:
-    image: jaegertracing/all-in-one:1.66
+    image: jaegertracing/all-in-one@sha256:9864182b4e01350fcc64631bdba5f4085f87daae9d477a04c25d9cb362e787a9 # 1.66.0 -- "1.66" (no patch) never existed on Docker Hub, only three-part tags do
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     networks:
@@ -90,9 +134,10 @@ services:
     ports:
       - "16686:16686"
       - "4317:4317"
+    profiles: ["observability"]
 
   grafana:
-    image: grafana/grafana:11.5.2
+    image: grafana/grafana@sha256:8b37a2f028f164ce7b9889e1765b9d6ee23fec80f871d156fbf436d6198d32b7 # 11.5.2
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
@@ -108,6 +153,42 @@ services:
     depends_on:
       - prometheus
       - jaeger
+    profiles: ["observability"]
+
+  # ---------------------------------------------------------
+  # MIGRATIONS -- one-shot, run to completion before any app
+  # service that depends on the schema they create starts.
+  # ---------------------------------------------------------
+  ledger-migrate:
+    build:
+      context: .
+      dockerfile: deploy/identity/migrate.Containerfile
+    image: cashflow-migrate:${CASHFLOW_VERSION:-dev}
+    command: ["/usr/local/bin/ledger-migrate"]
+    environment:
+      CASHFLOW_DB_URL: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+    networks:
+      - cashflow-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["app"]
+
+  consolidation-migrate:
+    build:
+      context: .
+      dockerfile: deploy/identity/migrate.Containerfile
+    image: cashflow-migrate:${CASHFLOW_VERSION:-dev}
+    command: ["/usr/local/bin/consolidation-migrate"]
+    environment:
+      CONSOLIDATION_DATABASE_URL: postgres://cashflow:${CASHFLOW_DB_PASSWORD:-secret}@postgres:5432/cashflow?sslmode=disable
+    networks:
+      - cashflow-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["app"]
+
   # ---------------------------------------------------------
   # MICROSERVICES
   # ---------------------------------------------------------
@@ -115,7 +196,7 @@ services:
     build:
       context: .
       dockerfile: deploy/identity/ledger-api.Containerfile
-    image: cashflow-ledger-api:latest
+    image: cashflow-ledger-api:${CASHFLOW_VERSION:-dev}
     environment:
       CASHFLOW_DB_URL: postgres://ledger_app:ledger_secret@postgres:5432/cashflow?sslmode=disable
       CASHFLOW_OIDC_ISSUER: https://edge.cashflow.local/realms/cashflow
@@ -132,14 +213,17 @@ services:
     volumes:
       - ./secrets/certs:/etc/cashflow:ro
     depends_on:
-      - postgres
-      - keycloak
+      ledger-migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    profiles: ["app"]
 
   consolidation-api:
     build:
       context: .
       dockerfile: deploy/identity/consolidation-api.Containerfile
-    image: cashflow-consolidation-api:latest
+    image: cashflow-consolidation-api:${CASHFLOW_VERSION:-dev}
     environment:
       CASHFLOW_DB_URL: postgres://consolidation_app:consolidation_secret@postgres:5432/cashflow?sslmode=disable
       CASHFLOW_OIDC_ISSUER: https://edge.cashflow.local/realms/cashflow
@@ -159,45 +243,59 @@ services:
       - ./secrets/certs:/etc/cashflow:ro
       - ./secrets/consolidation-client-secret:/run/secrets/consolidation-client-secret:ro
     depends_on:
-      - postgres
-      - keycloak
-      - ledger-api
+      consolidation-migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      ledger-api:
+        condition: service_started
+    profiles: ["app"]
 
   ledger-outbox-publisher:
     build:
       context: .
       dockerfile: deploy/identity/outbox-publisher.Containerfile
-    image: cashflow-outbox-publisher:latest
+    image: cashflow-outbox-publisher:${CASHFLOW_VERSION:-dev}
     environment:
       OUTBOX_POSTGRES_DSN: postgres://ledger_app:ledger_secret@postgres:5432/cashflow?sslmode=disable
-      OUTBOX_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      OUTBOX_RABBITMQ_URL: amqp://cashflow:${RABBITMQ_PASSWORD:-secret}@rabbitmq:5672/
+      OUTBOX_RABBITMQ_ALLOW_INSECURE: "true" # local Compose only: plaintext AMQP, no TLS material provisioned for this dev stack
     networks:
       - cashflow-net
     depends_on:
-      - postgres
-      - rabbitmq
+      ledger-migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    profiles: ["app"]
 
   consolidation-consumer:
     build:
       context: .
       dockerfile: deploy/identity/consolidation-consumer.Containerfile
-    image: cashflow-consolidation-consumer:latest
+    image: cashflow-consolidation-consumer:${CASHFLOW_VERSION:-dev}
     environment:
       CONSOLIDATION_DATABASE_URL: postgres://consolidation_app:consolidation_secret@postgres:5432/cashflow?sslmode=disable
-      CONSUMER_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      CONSUMER_RABBITMQ_URL: amqp://cashflow:${RABBITMQ_PASSWORD:-secret}@rabbitmq:5672/
+      CONSUMER_RABBITMQ_ALLOW_INSECURE: "true" # local Compose only: plaintext AMQP, no TLS material provisioned for this dev stack
     networks:
       - cashflow-net
     depends_on:
-      - postgres
-      - rabbitmq
+      consolidation-migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    profiles: ["app"]
 
   reconciliation-worker:
     build:
       context: .
       dockerfile: deploy/identity/reconciliation-worker.Containerfile
-    image: cashflow-reconciliation-worker:latest
+    image: cashflow-reconciliation-worker:${CASHFLOW_VERSION:-dev}
     environment:
       CASHFLOW_CONSOLIDATION_DSN: postgres://consolidation_app:consolidation_secret@postgres:5432/cashflow?sslmode=disable
+      CASHFLOW_OIDC_ISSUER: https://edge.cashflow.local/realms/cashflow
+      CASHFLOW_OIDC_JWKS_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/certs
       CASHFLOW_OIDC_TOKEN_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/token
       CASHFLOW_OIDC_CA_FILE: /etc/cashflow/ca.pem
       CASHFLOW_SERVICE_CLIENT_SECRET_FILE: /run/secrets/reconciliation-client-secret
@@ -213,8 +311,11 @@ services:
       - ./secrets/certs:/etc/cashflow:ro
       - ./secrets/reconciliation-client-secret:/run/secrets/reconciliation-client-secret:ro
     depends_on:
-      - postgres
-      - ledger-api
+      consolidation-migrate:
+        condition: service_completed_successfully
+      ledger-api:
+        condition: service_started
+    profiles: ["app"]
 
   # ---------------------------------------------------------
   # EDGE GATEWAY
@@ -223,7 +324,7 @@ services:
     build:
       context: .
       dockerfile: deploy/edge/krakend.Containerfile
-    image: cashflow-krakend:latest
+    image: cashflow-krakend:${CASHFLOW_VERSION:-dev}
     command: ["run", "-c", "/etc/krakend/krakend.json"]
     environment:
       SSL_CERT_FILE: /etc/cashflow/ca.pem
@@ -236,6 +337,49 @@ services:
     depends_on:
       - ledger-api
       - consolidation-api
+    profiles: ["app"]
+
+  # ---------------------------------------------------------
+  # LOAD TEST -- opt-in only (`docker compose --profile load-test run k6`).
+  # The host-based `make load-test` target is unaffected and keeps running
+  # test/k6/load.js directly against localhost.
+  # ---------------------------------------------------------
+  k6:
+    image: grafana/k6@sha256:b24f418fc99a26dd57904c952c03bfaf79462be18508acc45aafa07ff68e7df2 # 0.55.0
+    # --insecure-skip-tls-verify: this stack's Keycloak/mTLS certificates are
+    # self-signed (test/support/testpki), and k6 has no mechanism to import a
+    # custom CA -- skipping verification here only weakens this load-testing
+    # client's own TLS trust, not anything the domain services trust.
+    entrypoint: ["k6", "run", "--insecure-skip-tls-verify", "--summary-export=/reports/load-test-summary.json", "/scripts/load.js"]
+    environment:
+      BASE_URL: http://krakend:8080
+      KEYCLOAK_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/token
+    networks:
+      - cashflow-net
+    volumes:
+      - ./test/k6:/scripts:ro
+      - ./evidence/reports:/reports
+    profiles: ["load-test"]
+
+  # Measures the Ledger/Consolidation domain's own capacity, bypassing
+  # KrakenD's per-IP rate limit entirely (see test/k6/load-backend.js's
+  # header comment for why `k6` above cannot answer this question -- every
+  # VU there shares one source IP, so client_max_rate: 20 in krakend.json
+  # is the actual bottleneck it measures, not the domain).
+  k6-backend:
+    image: grafana/k6@sha256:b24f418fc99a26dd57904c952c03bfaf79462be18508acc45aafa07ff68e7df2 # 0.55.0
+    # See the `k6` service above for why --insecure-skip-tls-verify is here.
+    entrypoint: ["k6", "run", "--insecure-skip-tls-verify", "--summary-export=/reports/load-test-backend-summary.json", "/scripts/load-backend.js"]
+    environment:
+      LEDGER_URL: http://ledger-api:8081
+      CONSOLIDATION_URL: http://consolidation-api:8082
+      KEYCLOAK_URL: https://keycloak:8443/realms/cashflow/protocol/openid-connect/token
+    networks:
+      - cashflow-net
+    volumes:
+      - ./test/k6:/scripts:ro
+      - ./evidence/reports:/reports
+    profiles: ["load-test"]
 
 networks:
   cashflow-net:

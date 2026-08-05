@@ -943,8 +943,8 @@ SELECT checksum FROM ledger.schema_migration WHERE version = '000001_ledger_core
 	).Scan(&appliedMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if appliedMigrations != 3 {
-		t.Fatalf("fresh database should apply 000001 through 000003, got %d migrations", appliedMigrations)
+	if appliedMigrations != 4 {
+		t.Fatalf("fresh database should apply 000001 through 000004, got %d migrations", appliedMigrations)
 	}
 	if _, err := cyclePool.Exec(ctx, `
 UPDATE ledger.schema_migration SET checksum = repeat('0', 64)
@@ -1039,7 +1039,7 @@ INSERT INTO ledger.outbox_event (
 	}
 
 	if err := migrations.Apply(ctx, upgradePool); err != nil {
-		t.Fatalf("upgrade published 000001 through 000003: %v", err)
+		t.Fatalf("upgrade published 000001 through 000004: %v", err)
 	}
 	if err := migrations.Apply(ctx, upgradePool); err != nil {
 		t.Fatalf("second upgrade apply should be idempotent: %v", err)
@@ -1093,7 +1093,8 @@ SELECT version, checksum FROM ledger.schema_migration ORDER BY version`)
 	}
 	if checksums["000001_ledger_core.up.sql"] != published000001Checksum ||
 		len(checksums["000002_ledger_integrity.up.sql"]) != 64 ||
-		len(checksums["000003_outbox_publisher.up.sql"]) != 64 || len(checksums) != 3 {
+		len(checksums["000003_outbox_publisher.up.sql"]) != 64 ||
+		len(checksums["000004_roles.up.sql"]) != 64 || len(checksums) != 4 {
 		t.Fatalf("unexpected upgraded migration checksums: %+v", checksums)
 	}
 
