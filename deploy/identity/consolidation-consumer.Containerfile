@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/consolidation-consumer ./services/consolidation/cmd/consumer
 
 # alpine:3.22
-FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+FROM alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 RUN apk add --no-cache ca-certificates \
     && addgroup -S -g 65532 cashflow \
     && adduser -S -D -H -u 65532 -G cashflow cashflow
