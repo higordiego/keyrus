@@ -19,7 +19,7 @@ TRIVY_VERSION := v0.72.0
 
 export PATH := $(TOOLS_BIN):$(PATH)
 
-.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports load-test
+.PHONY: all bootstrap check-go-version tools policy-tools security-tools deps format format-check generate generate-check baseline proto-lint proto-breaking build lint test integration bdd bdd-parse reports ci policy security build-validation full-validation clean-reports load-test load-test-backend smoke
 
 .DEFAULT_GOAL := help
 
@@ -153,3 +153,13 @@ load-test:
 	@echo "Running K6 load tests..."
 	@mkdir -p evidence/reports
 	k6 run --summary-export=evidence/reports/load-test-summary.json test/k6/load.js
+
+load-test-backend:
+	@echo "Running K6 backend-direct load test (bypasses the KrakenD edge rate limit -- see test/k6/load-backend.js)..."
+	@mkdir -p evidence/reports
+	docker compose --profile load-test run --rm k6-backend
+
+smoke:
+	./scripts/smoke/clean-startup.sh
+	./scripts/smoke/restart-isolation.sh
+	./scripts/smoke/replica-loss.sh
