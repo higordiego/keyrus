@@ -8,14 +8,21 @@ function generateUUID() {
     });
 }
 
+// D-1 avoids UTC/America-Fortaleza day-boundary mismatches.
+function safeBusinessDate() {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().split('T')[0];
+}
+
 export const options = {
     scenarios: {
         write_entries: {
             executor: 'ramping-vus',
             startVUs: 0,
             stages: [
-                { duration: '10s', target: 40 },
-                { duration: '30s', target: 40 },
+                { duration: '10s', target: 50 },
+                { duration: '30s', target: 50 },
                 { duration: '10s', target: 0 },
             ],
             exec: 'writeEntries',
@@ -24,8 +31,8 @@ export const options = {
             executor: 'ramping-vus',
             startVUs: 0,
             stages: [
-                { duration: '10s', target: 20 },
-                { duration: '30s', target: 20 },
+                { duration: '10s', target: 50 },
+                { duration: '30s', target: 50 },
                 { duration: '10s', target: 0 },
             ],
             exec: 'readBalances',
@@ -34,8 +41,8 @@ export const options = {
             executor: 'ramping-vus',
             startVUs: 0,
             stages: [
-                { duration: '10s', target: 20 },
-                { duration: '30s', target: 20 },
+                { duration: '10s', target: 50 },
+                { duration: '30s', target: 50 },
                 { duration: '10s', target: 0 },
             ],
             exec: 'listEntries',
@@ -44,8 +51,8 @@ export const options = {
             executor: 'ramping-vus',
             startVUs: 0,
             stages: [
-                { duration: '10s', target: 10 },
-                { duration: '30s', target: 10 },
+                { duration: '10s', target: 50 },
+                { duration: '30s', target: 50 },
                 { duration: '10s', target: 0 },
             ],
             exec: 'getEntry',
@@ -54,8 +61,8 @@ export const options = {
             executor: 'ramping-vus',
             startVUs: 0,
             stages: [
-                { duration: '10s', target: 10 },
-                { duration: '30s', target: 10 },
+                { duration: '10s', target: 50 },
+                { duration: '30s', target: 50 },
                 { duration: '10s', target: 0 },
             ],
             exec: 'reverseEntry',
@@ -99,7 +106,7 @@ export function setup() {
             type: 'ENTRY_TYPE_CREDIT',
             amount: '1000',
             currency: 'BRL',
-            businessDate: new Date().toISOString().split('T')[0],
+            businessDate: safeBusinessDate(),
             description: 'Seed entry'
         });
         
@@ -132,7 +139,7 @@ export function writeEntries(data) {
         type: 'ENTRY_TYPE_CREDIT',
         amount: '1000',
         currency: 'BRL',
-        businessDate: new Date().toISOString().split('T')[0],
+        businessDate: safeBusinessDate(),
         description: 'Load test entry'
     });
 
@@ -163,7 +170,7 @@ export function readBalances(data) {
         },
     };
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = safeBusinessDate();
     let readRes = http.get(`${BASE_URL}/v1/daily-balances?start_date=${today}&end_date=${today}`, readParams);
     check(readRes, {
         'read status is 200': (r) => r.status === 200,

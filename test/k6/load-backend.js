@@ -21,6 +21,13 @@ function generateUUID() {
     });
 }
 
+// D-1 avoids UTC/America-Fortaleza day-boundary mismatches.
+function safeBusinessDate() {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().split('T')[0];
+}
+
 export const options = {
     stages: [
         { duration: '10s', target: 50 },
@@ -63,7 +70,7 @@ export function setup() {
             type: 'ENTRY_TYPE_CREDIT',
             amount: '1000',
             currency: 'BRL',
-            businessDate: new Date().toISOString().split('T')[0],
+            businessDate: safeBusinessDate(),
             description: 'Seed entry (backend-direct)',
         });
         http.post(`${LEDGER_URL}/v1/entries`, entryPayload, {
@@ -87,7 +94,7 @@ export default function (data) {
         type: 'ENTRY_TYPE_CREDIT',
         amount: '1000',
         currency: 'BRL',
-        businessDate: new Date().toISOString().split('T')[0],
+        businessDate: safeBusinessDate(),
         description: 'Load test entry (backend-direct)',
     });
 
@@ -111,7 +118,7 @@ export default function (data) {
             'Authorization': `Bearer ${data.token}`,
         },
     };
-    const today = new Date().toISOString().split('T')[0];
+    const today = safeBusinessDate();
     let readRes = http.get(`${CONSOLIDATION_URL}/v1/daily-balances?start_date=${today}&end_date=${today}`, readParams);
     if (readRes.status !== 200 && __ITER === 0) {
         console.error(`Read failed! Status: ${readRes.status}, Body: ${readRes.body}`);

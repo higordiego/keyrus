@@ -113,15 +113,15 @@ make load-test          # Roda passando pelo Gateway (Edge) simulando tráfego r
 make load-test-backend  # Roda chamadas diretas às APIs isoladas do Gateway
 ```
 
-### Estratégia de Teste de Carga e Concorrência Real (100 VUs)
-Para garantir e comprovar que a arquitetura suporta escalabilidade e não possui gargalos estruturais, o script de teste de carga (`test/k6/load.js`) foi configurado para rodar um **estresse com 100 VUs (Usuários Virtuais) simultâneos**, exercitando as 5 rotas cruciais do sistema de forma paralela.
+### Estratégia de Teste de Carga e Concorrência Real (250 VUs)
+Para garantir e comprovar que a arquitetura suporta escalabilidade e não possui gargalos estruturais, o script de teste de carga (`test/k6/load.js`) foi configurado para rodar um **estresse com 50 VUs (Usuários Virtuais) simultâneos por rota**, exercitando as 5 rotas cruciais do sistema em paralelo (250 VUs no pico agregado).
 
-Para simular um **cenário realista de concorrência massiva**, dividimos a carga em 5 cenários isolados competindo ao mesmo tempo:
-- `write_entries`: 40 VUs focados apenas em gerar lançamentos (`POST /v1/entries`), estressando a Ledger API, Postgres e RabbitMQ.
-- `read_balances`: 20 VUs buscando o saldo consolidado (`GET /v1/daily-balances`), estressando a Consolidation API.
-- `list_entries`: 20 VUs buscando extratos gerais (`GET /v1/entries`).
-- `get_entry`: 10 VUs lendo um lançamento específico pelo ID (`GET /v1/entries/{entryId}`).
-- `reverse_entry`: 10 VUs tentando realizar o estorno de um lançamento de forma concorrente (`POST /v1/entries/{entryId}/reversals`).
+Para simular um **cenário realista de concorrência massiva**, dividimos a carga em 5 cenários isolados competindo ao mesmo tempo, cada um com 50 VUs:
+- `write_entries`: gera lançamentos (`POST /v1/entries`), estressando a Ledger API, Postgres e RabbitMQ.
+- `read_balances`: busca o saldo consolidado (`GET /v1/daily-balances`), estressando a Consolidation API.
+- `list_entries`: busca extratos gerais (`GET /v1/entries`).
+- `get_entry`: lê um lançamento específico pelo ID (`GET /v1/entries/{entryId}`).
+- `reverse_entry`: tenta estornar um lançamento de forma concorrente (`POST /v1/entries/{entryId}/reversals`).
 
 > **Nota de Avaliação (Rate Limits):** O KrakenD possui *rate limits* estritos. Para permitir que o gateway local aceite as rajadas do teste de carga sem bloqueios artificiais (HTTP 429), **os limites globais de requisições no `deploy/edge/krakend/krakend.json` foram majorados para 2.000**. Para testar cenários de bloqueio e resiliência, basta baixar esses números e aplicar a carga novamente.
 ## Acessos e Interfaces
