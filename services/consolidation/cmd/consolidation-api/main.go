@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -112,6 +113,11 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("pgxpool.ParseConfig: %w", err)
 		}
+		maxConns, err := strconv.Atoi(value("CASHFLOW_DB_MAX_CONNS", "25"))
+		if err != nil || maxConns < 1 {
+			return fmt.Errorf("CASHFLOW_DB_MAX_CONNS must be a positive integer")
+		}
+		poolConfig.MaxConns = int32(maxConns)
 		poolConfig.ConnConfig.Tracer = otelpgx.NewTracer()
 		pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 		if err != nil {

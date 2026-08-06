@@ -1,6 +1,8 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
+const reversalResponse = http.expectedStatuses(200, 201, 409);
+
 function generateUUID() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         let r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
@@ -69,8 +71,8 @@ export const options = {
         },
     },
     thresholds: {
-        http_req_duration: ['p(95)<15000'], 
-        http_req_failed: ['rate<0.50'],   
+        http_req_duration: ['p(95)<1000'],
+        http_req_failed: ['rate<0.01'],
     },
 };
 
@@ -228,7 +230,10 @@ export function reverseEntry(data) {
         },
     };
 
-    let revRes = http.post(`${BASE_URL}/v1/entries/${data.entryId}/reversals`, "{}", writeParams);
+    let revRes = http.post(`${BASE_URL}/v1/entries/${data.entryId}/reversals`, "{}", {
+        ...writeParams,
+        responseCallback: reversalResponse,
+    });
     check(revRes, {
         'reverse status is valid (200/201/409)': (r) => r.status === 200 || r.status === 201 || r.status === 409,
     });
