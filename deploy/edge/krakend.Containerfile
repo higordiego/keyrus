@@ -1,5 +1,5 @@
 # golang:1.24.5-alpine3.21
-FROM golang@sha256:6edc20586dd08dacad538c1f09984bc2aa61720be59056cf75429691f294d731 AS plugin-builder
+FROM golang@sha256:512690a5660563b57d37ecc31129e7f136e831db2aed24a1dbeb8ad7380dc0fa AS plugin-builder
 
 RUN apk add --no-cache build-base binutils-gold
 WORKDIR /src
