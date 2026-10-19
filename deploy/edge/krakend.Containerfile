@@ -9,7 +9,7 @@ RUN mkdir /out \
     && go build -buildmode=plugin -o /out/cashflow-no-redirect.so .
 
 # krakend:2.10.2
-FROM krakend@sha256:639e285e3f6621a3a171c5c5bdf4fc3e2b5b8d016a0bf9c2da6f748e1973e020
+FROM krakend@sha256:c974c4c5a0b5276340641749488e183ace071494d832381e42d222f5398265b4
 
 COPY --from=plugin-builder /out/cashflow-no-redirect.so /etc/krakend/plugins/cashflow-no-redirect.so
 COPY deploy/edge/krakend/krakend.json /etc/krakend/krakend.json
